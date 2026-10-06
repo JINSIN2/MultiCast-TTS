@@ -740,7 +740,9 @@ async function fetchVoices() {
         headers: getRequestHeaders({ omitContentType: true }),
     });
     if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        const err = new Error(`HTTP ${response.status}`);
+        err.status = response.status;
+        throw err;
     }
     const json = await response.json();
     return (json.voices ?? []).map(v => ({
@@ -1328,7 +1330,12 @@ async function loadVoices(showToast = false) {
         $('#voice_cast_key').removeClass('success');
         renderVoiceSelects();
         if (showToast) {
-            toastr.error('목소리 목록을 못 불러왔어요. 기본 TTS 설정에서 ElevenLabs API 키가 등록돼 있는지 확인해 주세요.', 'MultiCast TTS');
+            const st = e?.status;
+            const why = st === 400 ? '실리태번에 ElevenLabs 키가 저장돼 있지 않아요. 🔑 버튼으로 키를 다시 넣어주세요.'
+                : st === 404 ? '이 실리태번 버전에는 필요한 기능이 없어요. 실리태번을 최신 버전으로 업데이트해 주세요.'
+                : st === 500 ? '일레븐랩스가 요청을 거절했거나 연결이 안 됐어요. 키가 맞는지(권한: Voices 읽기 포함), 인터넷 연결을 확인하고 실리태번 서버 화면(콘솔)의 ElevenLabs 메시지를 봐주세요.'
+                : '실리태번 서버와 연결이 안 됐어요.';
+            toastr.error(`목소리 목록을 못 불러왔어요 (${st ? `HTTP ${st}` : '연결 오류'}). ${why}`, 'MultiCast TTS', { timeOut: 12000 });
         }
     }
 }
