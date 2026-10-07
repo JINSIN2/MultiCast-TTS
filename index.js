@@ -117,10 +117,19 @@ function cleanMessageText(text) {
         .trim();
 }
 
+/** Translation currently shown on screen (LLM Translator → display_text, Mirror Translator → its own data). */
+function getShownTranslation(message) {
+    const mirror = message?.extra?.mirror_translator;
+    if (mirror && typeof mirror === 'object' && mirror.showing === 'translation' && mirror.source === message.mes && mirror.display) {
+        return mirror.display;
+    }
+    return message?.extra?.display_text || '';
+}
+
 /** Text the voices are based on: what's on screen (translation), or the original message. */
 function getMessageText(message) {
     const s = getSettings();
-    const translated = message?.extra?.display_text;
+    const translated = getShownTranslation(message);
     if (s.voiceLang === 'display' && translated) return cleanMessageText(translated);
     return cleanMessageText(message?.mes ?? '');
 }
@@ -841,6 +850,86 @@ function findTextRange(root, needle) {
     return range;
 }
 
+// --- Original <-> translation mapping, so the highlight follows whichever one is on screen ---
+
+const SEGMENT_RE = /"[^"\n]+"|\u201C[^\u201D\n]+\u201D|\u300C[^\u300D\n]+\u300D|\u300E[^\u300F\n]+\u300F|\*[^*\n]+\*/g;
+
+/** Comparable form: no markdown/quote marks, collapsed spaces, lowercase. */
+function normForMatch(str) {
+    return String(str ?? '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[*_~`"\u201C\u201D\u300C\u300D\u300E\u300F]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+function textLines(str) {
+    return cleanMessageText(str).split('\n').map(l => l.trim()).filter(Boolean);
+}
+
+/** Every version of this message's text we know about (original first). */
+function messageVersions(message) {
+    const ex = message?.extra ?? {};
+    const list = [message?.mes, ex.mirror_translator?.display, ex.display_text, ex.original_translation_backup];
+    const seen = new Set();
+    return list.filter(t => {
+        if (!t || typeof t !== 'string') return false;
+        const key = normForMatch(t);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+/** Where the line sits in a text: { lineIdx, segIdx } (segIdx = which quote/asterisk segment, -1 if none). */
+function locateLine(text, needle) {
+    const target = normForMatch(needle);
+    if (!target) return null;
+    const probe = target.length > 16 ? target.slice(0, 16) : target;
+    const lines = textLines(text);
+    for (let li = 0; li < lines.length; li++) {
+        const nl = normForMatch(lines[li]);
+        if (!nl.includes(target) && !nl.includes(probe)) continue;
+        const segs = lines[li].match(SEGMENT_RE) ?? [];
+        const segIdx = segs.findIndex(sg => {
+            const ns = normForMatch(sg);
+            return ns && (ns.includes(probe) || target.includes(ns));
+        });
+        return { lineIdx: li, segIdx };
+    }
+    return null;
+}
+
+/** The matching piece of another version of the text (same line, same segment if possible). */
+function pieceAt(text, pos) {
+    const line = textLines(text)[pos.lineIdx];
+    if (!line) return null;
+    const segs = line.match(SEGMENT_RE) ?? [];
+    const piece = pos.segIdx >= 0 && segs[pos.segIdx] ? segs[pos.segIdx] : line;
+    return piece.replace(/^[*"\u201C\u300C\u300E]+|[*"\u201D\u300D\u300F]+$/g, '').replace(/[*_~`]/g, '').trim();
+}
+
+function findLineRange(root, messageId, text) {
+    const direct = findTextRange(root, text);
+    if (direct) return direct;
+    // not on screen as-is → the other language is showing; map through the line position
+    const message = SillyTavern.getContext().chat?.[messageId];
+    if (!message) return null;
+    const versions = messageVersions(message);
+    for (const src of versions) {
+        const pos = locateLine(src, text);
+        if (!pos) continue;
+        for (const other of versions) {
+            if (other === src) continue;
+            const piece = pieceAt(other, pos);
+            const range = piece && findTextRange(root, piece);
+            if (range) return range;
+        }
+    }
+    return null;
+}
+
 function highlightLine(messageId, text) {
     clearHighlight();
     if (messageId === null || !getSettings().highlight) return;
@@ -848,7 +937,7 @@ function highlightLine(messageId, text) {
     const root = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
     if (!root) return;
     try {
-        const range = findTextRange(root, text);
+        const range = findLineRange(root, messageId, text);
         if (range) CSS.highlights.set(HL_NAME, new Highlight(range));
     } catch (e) {
         console.debug(LOG, 'highlight failed', e);
@@ -1180,7 +1269,7 @@ async function onCharacterMessageRendered(messageId, type) {
     const waitSec = Number(s.translationWaitSec) || 0;
     if (s.voiceLang === 'display' && waitSec > 0) {
         const until = Date.now() + waitSec * 1000;
-        while (Date.now() < until && !ctx.chat[messageId]?.extra?.display_text) {
+        while (Date.now() < until && !getShownTranslation(ctx.chat[messageId])) {
             await new Promise(r => setTimeout(r, 300));
         }
     }
@@ -1544,6 +1633,7 @@ async function openScriptEditor(messageId) {
                 { text: 'AI로 다시 분류', result: EDITOR_RECLASSIFY, icon: 'fa-rotate' },
             ],
         });
+        popup.dlg?.classList.add('vc_editor_popup');
         const result = await popup.show();
         const edited = readEditor($editor);
         const changed = JSON.stringify(edited) !== JSON.stringify(script);

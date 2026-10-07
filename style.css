@@ -197,3 +197,28 @@
 ::highlight(voice-cast-current) {
     background-color: rgba(255, 213, 79, 0.45);
 }
+
+/* ---- Editor popup buttons: wrap instead of overflowing on small screens ---- */
+.popup.vc_editor_popup .popup-controls {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    max-width: 100%;
+}
+
+.popup.vc_editor_popup .popup-controls .menu_button {
+    margin: 0;
+    max-width: 100%;
+}
+
+@media (max-width: 1000px) {
+    .popup.vc_editor_popup .popup-controls .menu_button {
+        font-size: 0.85em;
+        padding: 4px 8px;
+        min-height: 0;
+    }
+
+    .vc_icon_btn {
+        padding: 3px 5px;
+    }
+}
