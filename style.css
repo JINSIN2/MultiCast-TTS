@@ -310,3 +310,12 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
     opacity: 1;
     color: var(--active, #e8a33d);
 }
+
+/* read-along: ▶ for a line that isn't made yet (made when tapped) */
+.vc_line_play.vc_line_new {
+    opacity: 0.35;
+}
+
+.vc_line_play.vc_line_loading {
+    opacity: 0.8;
+}

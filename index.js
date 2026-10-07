@@ -25,6 +25,7 @@ const defaultSettings = Object.freeze({
     highlight: true,
     quickButtons: false,     // show 🔊/📜 on the message itself instead of only in the … menu
     lineButtons: false,      // small ▶ next to each line that already has audio
+    readMode: 'off',         // 'off' | 'all' (make every line on arrival) | 'tap' (classify on arrival, make a line when tapped)
     includeThoughts: true,
     preferTranslation: true, // legacy, replaced by voiceLang
     voiceLang: 'display',    // 'display' (what's on screen) | 'original' | 'translate'
@@ -1032,11 +1033,36 @@ function stopPlayback() {
     }
 }
 
-function playUrl(url, mySession) {
+/** Per-character volume from the cast row (1 = 100%, up to 2 = 200%). */
+function castVolumeFor(line) {
+    const v = line ? findCastEntry(line.speaker)?.volume : null;
+    return v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? 1 : Math.max(0, Number(v));
+}
+
+let audioCtx = null;
+/** Above 100% the <audio> element can't go louder by itself → route it through a Web Audio gain node. */
+function boostAudio(audio, gain) {
+    try {
+        const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+        if (!AC) return;
+        audioCtx ??= new AC();
+        if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+        const node = audioCtx.createGain();
+        node.gain.value = gain;
+        audioCtx.createMediaElementSource(audio).connect(node).connect(audioCtx.destination);
+    } catch (e) {
+        console.warn(LOG, 'volume boost failed', e);
+    }
+}
+
+function playUrl(url, mySession, line = null) {
     return new Promise((resolve) => {
         if (mySession !== session) return resolve();
         const audio = new Audio(url);
-        audio.volume = Math.min(1, Math.max(0, Number(getSettings().volume) || 1));
+        const master = Number(getSettings().volume);
+        const vol = (Number.isNaN(master) ? 1 : Math.max(0, master)) * castVolumeFor(line);
+        audio.volume = Math.min(1, vol);
+        if (vol > 1) boostAudio(audio, vol);
         currentAudio = audio;
         audio.onended = () => resolve();
         audio.onerror = () => { console.warn(LOG, 'audio error'); resolve(); };
@@ -1204,7 +1230,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             playingIndex = i;
             render();
             highlightLine(messageId, lines[i].src.orig ?? lines[i].src.text);
-            await playUrl(url, mySession);
+            await playUrl(url, mySession, lines[i].src);
         }
     } catch (e) {
         failed = true;
@@ -1229,6 +1255,15 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
 // ---------------------------------------------------------------------------
 
 const LINE_BTN = 'vc_line_play';
+
+function readMode() {
+    const m = getSettings().readMode;
+    return m === 'all' || m === 'tap' ? m : 'off';
+}
+
+function lineButtonsOn() {
+    return !!getSettings().lineButtons || readMode() !== 'off';
+}
 let linePlay = null; // { messageId, index }
 
 function setLinePlaying(target) {
@@ -1246,22 +1281,25 @@ function removeLineButtons(root) {
 }
 
 function decorateMessage(messageId) {
-    if (!getSettings().lineButtons) return;
+    if (!lineButtonsOn()) return;
     const root = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
     if (!root || root.querySelector(`.${LINE_BTN}`)) return;
     const message = SillyTavern.getContext().chat?.[messageId];
     if (!message || message.is_system) return;
     const script = getStoredEntry(message)?.script;
-    if (!Array.isArray(script) || !script.some(l => l?.audioKey)) return;
+    if (!Array.isArray(script)) return;
+    // read mode: every line that will be voiced gets a ▶ (hollow = not made yet, made on tap)
+    const tappable = readMode() !== 'off' ? new Set(buildPlayableLines(script).map(l => l.src)) : new Set();
+    if (!script.some(l => l?.audioKey || tappable.has(l))) return;
     script.forEach((line, index) => {
-        if (!line?.audioKey) return;
+        if (!line?.audioKey && !tappable.has(line)) return;
         let ranges = [];
         try { ranges = findLineRanges(root, messageId, line.orig ?? line.text); } catch { /* ignore */ }
         for (const range of ranges) {
             const btn = document.createElement('span');
-            btn.className = `${LINE_BTN} fa-solid fa-circle-play`;
+            btn.className = line.audioKey ? `${LINE_BTN} fa-solid fa-circle-play` : `${LINE_BTN} vc_line_new fa-regular fa-circle-play`;
             btn.dataset.line = String(index);
-            btn.title = `${line.speaker || ''} 대사 듣기`.trim();
+            btn.title = `${line.speaker || ''} 대사 ${line.audioKey ? '듣기' : '만들어서 듣기'}`.trim();
             btn.setAttribute('role', 'button');
             const at = range.cloneRange();
             at.collapse(true);
@@ -1279,7 +1317,7 @@ function redecorateMessage(messageId) {
 function refreshLineButtons({ rebuild = false } = {}) {
     document.querySelectorAll('#chat .mes').forEach((mes) => {
         const root = mes.querySelector('.mes_text');
-        if (rebuild || !getSettings().lineButtons) removeLineButtons(root);
+        if (rebuild || !lineButtonsOn()) removeLineButtons(root);
         decorateMessage(Number(mes.getAttribute('mesid')));
     });
 }
@@ -1289,7 +1327,7 @@ function watchChatForLineButtons() {
     const chat = document.getElementById('chat');
     if (!chat || typeof MutationObserver === 'undefined') return;
     new MutationObserver(() => {
-        if (!getSettings().lineButtons) return;
+        if (!lineButtonsOn()) return;
         clearTimeout(lineObserverTimer);
         lineObserverTimer = setTimeout(() => refreshLineButtons(), 300);
     }).observe(chat, { childList: true, subtree: true });
@@ -1302,17 +1340,39 @@ async function playScriptLine(messageId, index) {
     }
     stopPlayback();
     const mySession = session;
-    const line = getStoredEntry(SillyTavern.getContext().chat[messageId])?.script?.[index];
-    if (!line?.audioKey) return;
-    const url = await getCachedAudio(line.audioKey);
+    const ctx = SillyTavern.getContext();
+    const line = getStoredEntry(ctx.chat[messageId])?.script?.[index];
+    if (!line) return;
+    let url = line.audioKey ? await getCachedAudio(line.audioKey) : null;
     if (mySession !== session) return;
+    if (!url && readMode() !== 'off') {
+        // read mode: make just this line now
+        const voiceId = pickVoice(line);
+        if (!voiceId) {
+            toastr.warning('이 대사에 쓸 목소리가 없어요. 캐스트나 기본 목소리를 지정해 주세요.', 'MultiCast TTS');
+            return;
+        }
+        const $btn = $(`#chat .mes[mesid="${messageId}"] .${LINE_BTN}[data-line="${index}"]`);
+        $btn.addClass('vc_line_loading fa-spinner fa-spin').removeClass('fa-circle-play');
+        try {
+            const made = await synthesize(buildTtsText(line), voiceId, voiceSettingsFor(line));
+            line.audioKey = made.key;
+            url = made.url;
+            if (ctx.chat === SillyTavern.getContext().chat) ctx.saveChat();
+        } catch (e) {
+            console.error(LOG, e);
+            toastr.error(String(e.message ?? e), 'MultiCast TTS');
+        }
+        redecorateMessage(messageId);
+        if (mySession !== session || !url) return;
+    }
     if (!url) {
         toastr.info('이 기기에는 이 대사 음성이 없어요. 🔊로 메시지를 재생하면 다시 만들어져요.', 'MultiCast TTS');
         return;
     }
     setLinePlaying({ messageId, index });
     highlightLine(messageId, line.orig ?? line.text);
-    await playUrl(url, mySession);
+    await playUrl(url, mySession, line);
     if (mySession === session) {
         clearHighlight();
         setLinePlaying(null);
@@ -1355,7 +1415,7 @@ function collectSavedLines() {
     return out;
 }
 
-async function playClip(key) {
+async function playClip(key, line = null) {
     if (clipPlayKey === key) {
         stopPlayback();
         return;
@@ -1369,7 +1429,7 @@ async function playClip(key) {
         return;
     }
     setClipPlaying(key);
-    await playUrl(url, mySession);
+    await playUrl(url, mySession, line);
     if (mySession === session) {
         setClipPlaying(null);
         currentAudio = null;
@@ -1474,7 +1534,7 @@ async function openSavedList() {
                     <div class="vc_icon_btn vc_clip_dl fa-solid fa-download" title="mp3로 받기"></div>
                     <div class="vc_icon_btn vc_clip_del fa-solid fa-trash-can" title="이 음성 지우기"></div>
                 </div>`);
-            $row.find('.vc_clip_play').on('click', () => playClip(item.line.audioKey));
+            $row.find('.vc_clip_play').on('click', () => playClip(item.line.audioKey, item.line));
             $row.find('.vc_clip_dl').on('click', () => downloadClip(item));
             $row.find('.vc_clip_del').on('click', async () => {
                 const ok = await ctx.Popup.show.confirm('MultiCast TTS', '이 대사 음성을 지울까요? 다음에 메시지를 재생하면 새로 만들어져요(크레딧 사용).');
@@ -1621,7 +1681,34 @@ function onButtonClick(e) {
         reclassifyAndPlay(messageId);
         return;
     }
+    if (readMode() !== 'off' && !isPrepared(messageId)) {
+        prepareMessage(messageId);
+        return;
+    }
     playMessage(messageId);
+}
+
+/** Read mode: has this message been made ready (script, and in 'all' mode every line's audio)? */
+function isPrepared(messageId) {
+    const script = getStoredEntry(SillyTavern.getContext().chat[messageId])?.script;
+    if (!Array.isArray(script)) return false;
+    if (readMode() === 'tap') return true;
+    return buildPlayableLines(script).every(l => l.src.audioKey);
+}
+
+/** Read mode: get the message ready for reading along — no editor, no playback, just ▶ next to the lines. */
+async function prepareMessage(messageId) {
+    if (readMode() === 'all') return preloadMessage(messageId, { readAlong: true });
+    const show = (html, state) => { if (playingMessageId !== messageId) setStatus(messageId, html, state); };
+    try {
+        show('<i class="fa-solid fa-spinner fa-spin"></i> 대사 분류 중…');
+        await getScript(messageId);
+        redecorateMessage(messageId);
+        show('<i class="fa-solid fa-circle-play"></i> 준비됨 · 대사 ▶를 눌러 들어요', 'done');
+    } catch (e) {
+        console.error(LOG, 'prepare failed', e);
+        show('<i class="fa-solid fa-triangle-exclamation"></i> 분류 실패', 'error');
+    }
 }
 
 async function reclassifyAndPlay(messageId) {
@@ -1640,7 +1727,7 @@ async function reclassifyAndPlay(messageId) {
 
 async function onCharacterMessageRendered(messageId, type) {
     const s = getSettings();
-    if (!s.enabled || (!s.autoPlay && !s.pregenerate)) return;
+    if (!s.enabled || (!s.autoPlay && !s.pregenerate && readMode() === 'off')) return;
     if (type === 'first_message') return;
 
     const ctx = SillyTavern.getContext();
@@ -1656,14 +1743,16 @@ async function onCharacterMessageRendered(messageId, type) {
     }
     // the chat might have changed while waiting
     if (SillyTavern.getContext().chat[messageId] !== message) return;
-    if (s.autoPlay) playMessage(messageId);
+    if (readMode() !== 'off') prepareMessage(messageId);
+    else if (s.autoPlay) playMessage(messageId);
     else preloadMessage(messageId);
 }
 
 /** Classify + generate a message's audio in the background without playing it. */
-async function preloadMessage(messageId) {
+async function preloadMessage(messageId, { readAlong = false } = {}) {
     const chatAtStart = SillyTavern.getContext().chat;
-    const isActive = () => SillyTavern.getContext().chat === chatAtStart && getSettings().pregenerate;
+    const isActive = () => SillyTavern.getContext().chat === chatAtStart
+        && (readAlong ? readMode() === 'all' : getSettings().pregenerate);
     const show = (html, state) => { if (playingMessageId !== messageId) setStatus(messageId, html, state); };
     try {
         show('<i class="fa-solid fa-spinner fa-spin"></i> 미리 분류 중…');
@@ -1676,11 +1765,14 @@ async function preloadMessage(messageId) {
         const { done } = synthesizeAll(
             lines.map(l => ({ text: l.ttsText, voiceId: l.voiceId, src: l.src })),
             isActive,
-            (n) => show(`<i class="fa-solid fa-spinner fa-spin"></i> 미리 만드는 중 ${n}/${total}`),
+            (n) => {
+                show(`<i class="fa-solid fa-spinner fa-spin"></i> ${readAlong ? '음성 만드는 중' : '미리 만드는 중'} ${n}/${total}`);
+                redecorateMessage(messageId); // ▶ shows up as soon as each line is ready
+            },
         );
         savePinsWhenDone(done, messageId);
         await done;
-        if (isActive()) show('<i class="fa-solid fa-check"></i> 준비됨', 'done');
+        if (isActive()) show(readAlong ? '<i class="fa-solid fa-circle-play"></i> 준비됨 · 대사 ▶를 눌러 들어요' : '<i class="fa-solid fa-check"></i> 준비됨', 'done');
         else show(null);
     } catch (e) {
         console.error(LOG, 'preload failed', e);
@@ -1736,7 +1828,7 @@ function renderCastList() {
         }
         list.forEach((entry, i) => {
             const moveTitle = scope === 'bot' ? '공통 캐스트로 옮기기 (모든 봇에 적용)' : '이 봇 캐스트로 옮기기';
-            const hasCustom = (entry.stability ?? null) !== null || (entry.similarity ?? null) !== null;
+            const hasCustom = (entry.stability ?? null) !== null || (entry.similarity ?? null) !== null || (entry.volume ?? null) !== null;
             const $row = $(`
                 <div class="vc_cast_row" data-index="${i}" data-scope="${scope}">
                     <input type="text" class="text_pole vc_cast_names" placeholder="이름, 별명 (쉼표로 구분)" />
@@ -1747,11 +1839,13 @@ function renderCastList() {
                     </select>
                     <select class="text_pole vc_cast_voice">${voiceOptionsHtml(entry.voiceId)}</select>
                     <div class="vc_cast_btns">
-                        <div class="vc_cast_adv_toggle fa-solid fa-sliders ${hasCustom ? 'vc_custom' : ''}" title="이 캐릭터만 연기 설정 따로 (Stability / Similarity)"></div>
+                        <div class="vc_cast_adv_toggle fa-solid fa-sliders ${hasCustom ? 'vc_custom' : ''}" title="이 캐릭터만 따로 설정 (음량 / Stability / Similarity)"></div>
                         ${scope === 'global' && !bot ? '' : `<div class="vc_cast_move fa-solid ${scope === 'bot' ? 'fa-globe' : 'fa-user-tag'}" title="${moveTitle}"></div>`}
                         <div class="vc_cast_delete fa-solid fa-trash-can" title="삭제"></div>
                     </div>
                     <div class="vc_cast_adv" style="display:none">
+                        <label>음량: <span class="vc_cast_vol_val"></span></label>
+                        <input type="range" class="vc_cast_vol" min="0" max="2" step="0.05" />
                         <label>Stability: <span class="vc_cast_stab_val"></span></label>
                         <input type="range" class="vc_cast_stab" min="0" max="1" step="0.05" />
                         <label>Similarity: <span class="vc_cast_sim_val"></span></label>
@@ -1769,6 +1863,9 @@ function renderCastList() {
             $row.find('.vc_cast_sim').val(sim ?? g.similarity);
             $row.find('.vc_cast_stab_val').text(stab === null ? `공통 (${Math.round(g.stability * 100)}%)` : `${Math.round(stab * 100)}%`);
             $row.find('.vc_cast_sim_val').text(sim === null ? `공통 (${Math.round(g.similarity * 100)}%)` : `${Math.round(sim * 100)}%`);
+            const vol = entry.volume ?? null;
+            $row.find('.vc_cast_vol').val(vol ?? 1);
+            $row.find('.vc_cast_vol_val').text(vol === null ? '100%' : `${Math.round(vol * 100)}%`);
             if (openAdv.has(`${scope}:${i}`)) $row.find('.vc_cast_adv').show();
             $row.find('.vc_cast_names').val(entry.names ?? '');
             $row.find('.vc_cast_gender').val(entry.gender ?? 'u');
@@ -2161,6 +2258,15 @@ function settingsHtml() {
                 <label class="checkbox_label"><input id="voice_cast_enabled" type="checkbox" /><span>사용</span></label>
                 <label class="checkbox_label"><input id="voice_cast_auto" type="checkbox" /><span>새 답변 자동 재생</span></label>
                 <label class="checkbox_label" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
+                <div class="vc_row">
+                    <label for="voice_cast_read_mode">📖 읽으면서 듣기</label>
+                    <select id="voice_cast_read_mode" class="text_pole" style="width:auto">
+                        <option value="off">끄기</option>
+                        <option value="all">미리 다 만들기 (누르면 바로 · 크레딧 전부)</option>
+                        <option value="tap">누를 때 만들기 (들은 대사만 크레딧)</option>
+                    </select>
+                </div>
+                <div class="vc_hint">켜면 새 답변이 와도 자동 재생·편집창 없이 대사 앞에 ▶만 생겨요. 읽다가 듣고 싶은 대사만 눌러요. 🔊는 처음엔 '준비', 준비된 뒤 누르면 전체 재생이에요.</div>
                 <label class="checkbox_label" title="이미 만든 음성이 있는 대사 앞에 작은 ▶가 생겨요. 누르면 그 대사만 다시 들어요 (크레딧 안 씀)."><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기 (만든 음성만)</span></label>
                 <label class="checkbox_label" title="새 답변이 오면 분류와 음성 생성을 미리 해둬요. 🔊를 누르면 바로 나와요. 안 들을 메시지에도 크레딧이 쓰여요. (자동 재생이 켜져 있으면 그쪽이 우선)"><input id="voice_cast_pregen" type="checkbox" /><span>새 답변 음성 미리 만들어두기 (재생은 안 함 · 크레딧 사용)</span></label>
                 <label class="checkbox_label"><input id="voice_cast_thoughts" type="checkbox" /><span>속마음(*별표*)도 읽기</span></label>
@@ -2325,6 +2431,11 @@ function bindSettingsUI() {
     bindCheck('#voice_cast_pregen', 'pregenerate');
     bindCheck('#voice_cast_quick', 'quickButtons');
     bindCheck('#voice_cast_line_btns', 'lineButtons');
+    $('#voice_cast_read_mode').val(readMode()).on('change', function () {
+        s.readMode = String($(this).val());
+        save();
+        refreshLineButtons({ rebuild: true });
+    });
     $('#voice_cast_line_btns').on('change', () => refreshLineButtons());
     $('#voice_cast_saved_list').on('click', openSavedList);
     $('#voice_cast_quick').on('change', applyQuickButtons);
@@ -2473,6 +2584,16 @@ function bindSettingsUI() {
             const $adv = $(this).closest('.vc_cast_row').find('.vc_cast_adv');
             if (openAdv.has(id)) { openAdv.delete(id); $adv.hide(); } else { openAdv.add(id); $adv.show(); }
         })
+        .on('input', '.vc_cast_vol', function () {
+            const { list, i } = rowRef(this);
+            if (!list?.[i]) return;
+            const v = Number($(this).val());
+            list[i].volume = v;
+            const $row = $(this).closest('.vc_cast_row');
+            $row.find('.vc_cast_vol_val').text(`${Math.round(v * 100)}%`);
+            $row.find('.vc_cast_adv_toggle').addClass('vc_custom');
+            save();
+        })
         .on('input', '.vc_cast_stab, .vc_cast_sim', function () {
             const { list, i } = rowRef(this);
             if (!list?.[i]) return;
@@ -2489,6 +2610,7 @@ function bindSettingsUI() {
             if (!list?.[i]) return;
             delete list[i].stability;
             delete list[i].similarity;
+            delete list[i].volume;
             save();
             renderCastList();
         })
