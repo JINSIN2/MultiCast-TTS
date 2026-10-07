@@ -222,3 +222,18 @@
         padding: 3px 5px;
     }
 }
+
+/* ---- Optional: 🔊/📜 right on the message ---- */
+.vc_quick_btns {
+    display: none;
+}
+
+body.vc_quick_on .vc_quick_btns {
+    display: flex;
+    gap: inherit;
+}
+
+body.vc_quick_on .extraMesButtons .vc_play_btn,
+body.vc_quick_on .extraMesButtons .vc_edit_btn {
+    display: none;
+}

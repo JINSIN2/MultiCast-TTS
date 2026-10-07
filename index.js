@@ -23,6 +23,7 @@ const defaultSettings = Object.freeze({
     autoPlay: false,
     pregenerate: false,
     highlight: true,
+    quickButtons: false,     // show 🔊/📜 on the message itself instead of only in the … menu
     includeThoughts: true,
     preferTranslation: true, // legacy, replaced by voiceLang
     voiceLang: 'display',    // 'display' (what's on screen) | 'original' | 'translate'
@@ -126,10 +127,20 @@ function getShownTranslation(message) {
     return message?.extra?.display_text || '';
 }
 
+/** LLM Translator's side-by-side mode puts both languages in display_text as paired spans. */
+function bilingualParts(displayText) {
+    const grab = cls => [...String(displayText ?? '').matchAll(new RegExp(`<span class="${cls}[^"]*">([\\s\\S]*?)</span>`, 'g'))].map(m => m[1]);
+    const trans = grab('translated_text');
+    const orig = grab('original_text');
+    return trans.length && trans.length === orig.length ? { trans, orig } : null;
+}
+
 /** Text the voices are based on: what's on screen (translation), or the original message. */
 function getMessageText(message) {
     const s = getSettings();
-    const translated = getShownTranslation(message);
+    const shown = getShownTranslation(message);
+    const pairs = bilingualParts(shown);
+    const translated = pairs ? pairs.trans.join('\n') : shown;
     if (s.voiceLang === 'display' && translated) return cleanMessageText(translated);
     return cleanMessageText(message?.mes ?? '');
 }
@@ -221,11 +232,25 @@ function ensureBotCast() {
     const seen = (s.castAutoSeen[bot.key] ??= []);
     const known = name => allCastEntries().some(e => entryNames(e, userName).includes(normName(name)));
     let changed = false;
-    for (const name of [...bot.members, userName]) {
+    for (const name of bot.members) {
         if (!name || seen.includes(normName(name))) continue;
         seen.push(normName(name));
         changed = true;
         if (!known(name)) list.push({ names: name, gender: 'u', voiceId: '' });
+    }
+    // The persona row: ST may switch to the bot's linked persona a moment after the chat opens,
+    // so an auto-added persona row that has no voice yet follows the current persona.
+    const autoUser = [...list].reverse().find(e => e.autoUser);
+    const untouched = autoUser && !autoUser.voiceId && normName(autoUser.names) === normName(autoUser.autoUser);
+    if (userName && untouched && normName(autoUser.names) !== normName(userName)) {
+        if (known(userName)) list.splice(list.indexOf(autoUser), 1);
+        else { autoUser.names = userName; autoUser.autoUser = userName; }
+        if (!seen.includes(normName(userName))) seen.push(normName(userName));
+        changed = true;
+    } else if (userName && !seen.includes(normName(userName))) {
+        seen.push(normName(userName));
+        changed = true;
+        if (!known(userName)) list.push({ names: userName, gender: 'u', voiceId: '', autoUser: userName });
     }
     if (changed) save();
 }
@@ -816,34 +841,47 @@ function clearHighlight() {
     try { globalThis.CSS?.highlights?.delete(HL_NAME); } catch { /* unsupported */ }
 }
 
+/** Letters and digits only, lowercased: immune to quotes/apostrophes (' vs ’), ellipses, markdown and spacing. */
+const MATCH_CHAR = /[\p{L}\p{N}]/u;
+
 function findTextRange(root, needle) {
+    if (!root) return null;
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     let full = '';
     const map = []; // index in `full` -> { node, offset }
-    let prevSpace = true;
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
         const t = n.nodeValue ?? '';
         for (let i = 0; i < t.length; i++) {
-            const isSpace = /\s/.test(t[i]);
-            if (isSpace && prevSpace) continue;
-            full += isSpace ? ' ' : t[i];
+            if (!MATCH_CHAR.test(t[i])) continue;
+            full += t[i].toLowerCase();
             map.push({ node: n, offset: i });
-            prevSpace = isSpace;
         }
     }
-    const target = String(needle ?? '').replace(/\s+/g, ' ').trim();
-    if (!target) return null;
-    let idx = full.indexOf(target);
-    let len = target.length;
-    if (idx === -1 && target.length > 8) {
-        // text may differ slightly (punctuation, line edits) → anchor on the beginning
-        const prefix = target.slice(0, Math.min(16, target.length));
-        idx = full.indexOf(prefix);
-        len = prefix.length;
+    const target = [...String(needle ?? '')].filter(ch => MATCH_CHAR.test(ch)).join('').toLowerCase();
+    if (!target || !full) return null;
+    let start = full.indexOf(target);
+    let end = start === -1 ? -1 : start + target.length;
+    if (start === -1 && target.length > 8) {
+        // line was edited or narration in the middle was cut out → anchor on its start, then
+        // follow the rest of the line piece by piece so the highlight still covers all of it
+        const k = Math.min(12, Math.floor(target.length / 2));
+        start = full.indexOf(target.slice(0, k));
+        if (start === -1) return null;
+        end = start + k;
+        let i = k;
+        while (i < target.length) {
+            const chunk = target.slice(i, i + Math.min(5, target.length - i));
+            const q = full.indexOf(chunk, end);
+            if (q === -1 || q - end > 300) { i++; continue; }
+            let len = chunk.length;
+            while (i + len < target.length && full[q + len] === target[i + len]) len++;
+            end = q + len;
+            i += len;
+        }
     }
-    if (idx === -1) return null;
-    const a = map[idx];
-    const b = map[Math.min(idx + len, map.length) - 1];
+    if (start === -1) return null;
+    const a = map[start];
+    const b = map[end - 1];
     const range = document.createRange();
     range.setStart(a.node, a.offset);
     range.setEnd(b.node, b.offset + 1);
@@ -910,11 +948,44 @@ function pieceAt(text, pos) {
     return piece.replace(/^[*"\u201C\u300C\u300E]+|[*"\u201D\u300D\u300F]+$/g, '').replace(/[*_~`]/g, '').trim();
 }
 
-function findLineRange(root, messageId, text) {
+/** Side-by-side translation on screen: highlight the line in both languages. */
+function findBilingualRanges(root, message, text) {
+    const pairs = bilingualParts(message?.extra?.display_text);
+    if (!pairs) return [];
+    // SillyTavern prefixes classes inside messages with "custom-"
+    const els = {
+        orig: root.querySelectorAll('.original_text, .custom-original_text'),
+        trans: root.querySelectorAll('.translated_text, .custom-translated_text'),
+    };
+    if (els.orig.length !== pairs.orig.length || els.trans.length !== pairs.trans.length) return [];
+    const ranges = [];
+    for (const [from, to] of [['orig', 'trans'], ['trans', 'orig']]) {
+        for (let p = 0; p < pairs[from].length; p++) {
+            const pos = locateLine(pairs[from][p], text);
+            if (!pos) continue;
+            const own = findTextRange(els[from][p], text) ?? findTextRange(els[from][p], pieceAt(pairs[from][p], pos));
+            const piece = pieceAt(pairs[to][p], { lineIdx: 0, segIdx: pos.segIdx });
+            const other = piece && findTextRange(els[to][p], piece);
+            if (own) ranges.push(own);
+            if (other) ranges.push(other);
+            if (ranges.length) return ranges;
+        }
+    }
+    return ranges;
+}
+
+function findLineRanges(root, messageId, text) {
+    const message = SillyTavern.getContext().chat?.[messageId];
+    const both = findBilingualRanges(root, message, text);
+    if (both.length) return both;
+    const single = findLineRange(root, message, text);
+    return single ? [single] : [];
+}
+
+function findLineRange(root, message, text) {
     const direct = findTextRange(root, text);
     if (direct) return direct;
     // not on screen as-is → the other language is showing; map through the line position
-    const message = SillyTavern.getContext().chat?.[messageId];
     if (!message) return null;
     const versions = messageVersions(message);
     for (const src of versions) {
@@ -937,8 +1008,8 @@ function highlightLine(messageId, text) {
     const root = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
     if (!root) return;
     try {
-        const range = findLineRange(root, messageId, text);
-        if (range) CSS.highlights.set(HL_NAME, new Highlight(range));
+        const ranges = findLineRanges(root, messageId, text);
+        if (ranges.length) CSS.highlights.set(HL_NAME, new Highlight(...ranges));
     } catch (e) {
         console.debug(LOG, 'highlight failed', e);
     }
@@ -1206,15 +1277,31 @@ async function downloadMessageAudio(messageId, scriptOverride = null) {
 const BUTTON_HTML = '<div class="mes_button vc_play_btn fa-solid fa-volume-high" title="MultiCast TTS 재생 (Shift+클릭: 다시 분류)"></div>'
     + '<div class="mes_button vc_edit_btn fa-solid fa-scroll" title="MultiCast TTS 대본 편집"></div>';
 
+const QUICK_HTML = `<div class="vc_quick_btns">${BUTTON_HTML}</div>`;
+
+/** "Buttons on the message" option: CSS swaps which copy is visible (… menu or the message itself). */
+function applyQuickButtons() {
+    document.body.classList.toggle('vc_quick_on', !!getSettings().quickButtons);
+}
+
 function injectButtons() {
     // Template: every newly rendered message gets the buttons automatically
     const $tpl = $('#message_template .extraMesButtons');
     if ($tpl.length && !$tpl.find('.vc_play_btn').length) {
         $tpl.prepend(BUTTON_HTML);
     }
+    const $tplHint = $('#message_template .mes_buttons .extraMesButtonsHint');
+    if ($tplHint.length && !$('#message_template .vc_quick_btns').length) {
+        $tplHint.before(QUICK_HTML);
+    }
     // Already-rendered messages
     $('#chat .mes .extraMesButtons').each(function () {
         if (!$(this).find('.vc_play_btn').length) $(this).prepend(BUTTON_HTML);
+    });
+    $('#chat .mes .mes_buttons').each(function () {
+        if ($(this).find('.vc_quick_btns').length) return;
+        const $hint = $(this).find('.extraMesButtonsHint');
+        if ($hint.length) $hint.before(QUICK_HTML);
     });
 }
 
@@ -1770,6 +1857,7 @@ function settingsHtml() {
             <div class="inline-drawer-content">
                 <label class="checkbox_label"><input id="voice_cast_enabled" type="checkbox" /><span>사용</span></label>
                 <label class="checkbox_label"><input id="voice_cast_auto" type="checkbox" /><span>새 답변 자동 재생</span></label>
+                <label class="checkbox_label" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
                 <label class="checkbox_label" title="새 답변이 오면 분류와 음성 생성을 미리 해둬요. 🔊를 누르면 바로 나와요. 안 들을 메시지에도 크레딧이 쓰여요. (자동 재생이 켜져 있으면 그쪽이 우선)"><input id="voice_cast_pregen" type="checkbox" /><span>새 답변 음성 미리 만들어두기 (재생은 안 함 · 크레딧 사용)</span></label>
                 <label class="checkbox_label"><input id="voice_cast_thoughts" type="checkbox" /><span>속마음(*별표*)도 읽기</span></label>
                 <div class="vc_row">
@@ -1930,6 +2018,8 @@ function bindSettingsUI() {
     bindCheck('#voice_cast_enabled', 'enabled');
     bindCheck('#voice_cast_auto', 'autoPlay');
     bindCheck('#voice_cast_pregen', 'pregenerate');
+    bindCheck('#voice_cast_quick', 'quickButtons');
+    $('#voice_cast_quick').on('change', applyQuickButtons);
     bindCheck('#voice_cast_thoughts', 'includeThoughts');
     const syncLangUI = () => {
         $('#voice_cast_voice_lang').val(s.voiceLang);
@@ -2204,6 +2294,7 @@ jQuery(async () => {
     renderVoiceSelects();
 
     injectButtons();
+    applyQuickButtons();
     $(document).on('click', '.vc_play_btn', onButtonClick);
     $(document).on('click', '.vc_edit_btn', onEditButtonClick);
     $(document).on('click', '.vc_status', (e) => { e.stopPropagation(); stopPlayback(); });
@@ -2214,7 +2305,12 @@ jQuery(async () => {
         setTimeout(injectButtons, 100);
         ensureBotCast();
         renderCastList();
+        // the bot's linked persona can be applied right after this event
+        setTimeout(() => { ensureBotCast(); renderCastList(); }, 800);
     });
+    if (event_types.PERSONA_CHANGED) {
+        eventSource.on(event_types.PERSONA_CHANGED, () => { ensureBotCast(); renderCastList(); });
+    }
     eventSource.on(event_types.MORE_MESSAGES_LOADED, injectButtons);
     eventSource.on(event_types.MESSAGE_SWIPED, (id) => { if (playingMessageId === Number(id)) stopPlayback(); });
     eventSource.on(event_types.APP_READY, () => { loadVoices(false); addWandItem(); });
