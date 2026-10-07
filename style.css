@@ -237,3 +237,76 @@ body.vc_quick_on .extraMesButtons .vc_play_btn,
 body.vc_quick_on .extraMesButtons .vc_edit_btn {
     display: none;
 }
+
+/* ---- ▶ next to each line ---- */
+.vc_line_play {
+    display: inline-block;
+    margin: 0 3px 0 0;
+    font-size: 0.8em;
+    opacity: 0.45;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    vertical-align: baseline;
+    font-style: normal;
+}
+
+.vc_line_play:hover,
+.vc_line_play.vc_line_playing {
+    opacity: 1;
+    color: var(--active, #e8a33d);
+}
+
+/* ---- Saved line audio list ---- */
+.vc_saved {
+    text-align: left;
+}
+
+.vc_saved_filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0;
+}
+
+.vc_saved_filters .text_pole {
+    margin: 0;
+    flex: 1 1 140px;
+    min-width: 0;
+}
+
+.vc_saved_group {
+    margin: 12px 0 4px;
+    font-weight: bold;
+    font-size: 0.9em;
+    cursor: pointer;
+    opacity: 0.85;
+}
+
+.vc_saved_group:hover {
+    text-decoration: underline;
+}
+
+.vc_saved_row {
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.vc_saved_text {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 0.9em;
+    overflow-wrap: anywhere;
+}
+
+.vc_saved_row.vc_missing {
+    opacity: 0.5;
+}
+
+.vc_clip_play.vc_line_playing {
+    opacity: 1;
+    color: var(--active, #e8a33d);
+}

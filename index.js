@@ -24,6 +24,7 @@ const defaultSettings = Object.freeze({
     pregenerate: false,
     highlight: true,
     quickButtons: false,     // show 🔊/📜 on the message itself instead of only in the … menu
+    lineButtons: false,      // small ▶ next to each line that already has audio
     includeThoughts: true,
     preferTranslation: true, // legacy, replaced by voiceLang
     voiceLang: 'display',    // 'display' (what's on screen) | 'original' | 'translate'
@@ -1018,6 +1019,8 @@ function highlightLine(messageId, text) {
 function stopPlayback() {
     session++;
     clearHighlight();
+    setLinePlaying(null);
+    setClipPlaying(null);
     if (currentAudio) {
         currentAudio.pause();
         currentAudio = null;
@@ -1126,7 +1129,10 @@ function savePinsWhenDone(done, messageId) {
     const chatAtStart = SillyTavern.getContext().chat;
     done.then((changed) => {
         const ctxNow = SillyTavern.getContext();
-        if (changed && messageId !== null && ctxNow.chat === chatAtStart) ctxNow.saveChat();
+        if (changed && messageId !== null && ctxNow.chat === chatAtStart) {
+            ctxNow.saveChat();
+            redecorateMessage(messageId);
+        }
     });
 }
 
@@ -1216,6 +1222,294 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             currentAudio = null;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// ▶ next to each line in the chat (only lines that already have audio → never costs credits)
+// ---------------------------------------------------------------------------
+
+const LINE_BTN = 'vc_line_play';
+let linePlay = null; // { messageId, index }
+
+function setLinePlaying(target) {
+    $(`.${LINE_BTN}.vc_line_playing`).removeClass('vc_line_playing fa-circle-stop').addClass('fa-circle-play');
+    linePlay = target;
+    if (!target) return;
+    $(`#chat .mes[mesid="${target.messageId}"] .${LINE_BTN}[data-line="${target.index}"]`)
+        .addClass('vc_line_playing fa-circle-stop').removeClass('fa-circle-play');
+}
+
+function removeLineButtons(root) {
+    if (!root) return;
+    root.querySelectorAll(`.${LINE_BTN}`).forEach(el => el.remove());
+    root.normalize();
+}
+
+function decorateMessage(messageId) {
+    if (!getSettings().lineButtons) return;
+    const root = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
+    if (!root || root.querySelector(`.${LINE_BTN}`)) return;
+    const message = SillyTavern.getContext().chat?.[messageId];
+    if (!message || message.is_system) return;
+    const script = getStoredEntry(message)?.script;
+    if (!Array.isArray(script) || !script.some(l => l?.audioKey)) return;
+    script.forEach((line, index) => {
+        if (!line?.audioKey) return;
+        let ranges = [];
+        try { ranges = findLineRanges(root, messageId, line.orig ?? line.text); } catch { /* ignore */ }
+        for (const range of ranges) {
+            const btn = document.createElement('span');
+            btn.className = `${LINE_BTN} fa-solid fa-circle-play`;
+            btn.dataset.line = String(index);
+            btn.title = `${line.speaker || ''} 대사 듣기`.trim();
+            btn.setAttribute('role', 'button');
+            const at = range.cloneRange();
+            at.collapse(true);
+            at.insertNode(btn);
+        }
+    });
+    if (linePlay?.messageId === Number(messageId)) setLinePlaying(linePlay);
+}
+
+function redecorateMessage(messageId) {
+    removeLineButtons(document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`));
+    decorateMessage(messageId);
+}
+
+function refreshLineButtons({ rebuild = false } = {}) {
+    document.querySelectorAll('#chat .mes').forEach((mes) => {
+        const root = mes.querySelector('.mes_text');
+        if (rebuild || !getSettings().lineButtons) removeLineButtons(root);
+        decorateMessage(Number(mes.getAttribute('mesid')));
+    });
+}
+
+let lineObserverTimer = null;
+function watchChatForLineButtons() {
+    const chat = document.getElementById('chat');
+    if (!chat || typeof MutationObserver === 'undefined') return;
+    new MutationObserver(() => {
+        if (!getSettings().lineButtons) return;
+        clearTimeout(lineObserverTimer);
+        lineObserverTimer = setTimeout(() => refreshLineButtons(), 300);
+    }).observe(chat, { childList: true, subtree: true });
+}
+
+async function playScriptLine(messageId, index) {
+    if (linePlay && linePlay.messageId === messageId && linePlay.index === index) {
+        stopPlayback();
+        return;
+    }
+    stopPlayback();
+    const mySession = session;
+    const line = getStoredEntry(SillyTavern.getContext().chat[messageId])?.script?.[index];
+    if (!line?.audioKey) return;
+    const url = await getCachedAudio(line.audioKey);
+    if (mySession !== session) return;
+    if (!url) {
+        toastr.info('이 기기에는 이 대사 음성이 없어요. 🔊로 메시지를 재생하면 다시 만들어져요.', 'MultiCast TTS');
+        return;
+    }
+    setLinePlaying({ messageId, index });
+    highlightLine(messageId, line.orig ?? line.text);
+    await playUrl(url, mySession);
+    if (mySession === session) {
+        clearHighlight();
+        setLinePlaying(null);
+        currentAudio = null;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Saved line audio of this chat, as a list
+// ---------------------------------------------------------------------------
+
+let clipPlayKey = null;
+
+function setClipPlaying(key) {
+    $('.vc_clip_play.vc_line_playing').removeClass('vc_line_playing fa-stop').addClass('fa-play');
+    clipPlayKey = key;
+    if (key) $(`.vc_clip_play[data-key="${key}"]`).addClass('vc_line_playing fa-stop').removeClass('fa-play');
+}
+
+function variantLabel(key) {
+    if (key === 'display') return '화면';
+    if (key === 'original') return '원문';
+    if (String(key).startsWith('tr:')) return `번역·${String(key).slice(3)}`;
+    return String(key);
+}
+
+function collectSavedLines() {
+    const chat = SillyTavern.getContext().chat ?? [];
+    const out = [];
+    for (let mesId = chat.length - 1; mesId >= 0; mesId--) {
+        const root = chat[mesId]?.extra?.[MODULE_NAME];
+        if (!root) continue;
+        const variants = root.variants ?? (Array.isArray(root.script) ? { display: root } : {});
+        for (const [vKey, entry] of Object.entries(variants)) {
+            (entry?.script ?? []).forEach((line) => {
+                if (line?.audioKey) out.push({ mesId, vKey, line });
+            });
+        }
+    }
+    return out;
+}
+
+async function playClip(key) {
+    if (clipPlayKey === key) {
+        stopPlayback();
+        return;
+    }
+    stopPlayback();
+    const mySession = session;
+    const url = await getCachedAudio(key);
+    if (mySession !== session) return;
+    if (!url) {
+        toastr.info('이 기기에는 저장된 음성이 없어요.', 'MultiCast TTS');
+        return;
+    }
+    setClipPlaying(key);
+    await playUrl(url, mySession);
+    if (mySession === session) {
+        setClipPlaying(null);
+        currentAudio = null;
+    }
+}
+
+async function downloadClip(item) {
+    try {
+        const blob = await getStore()?.getItem(item.line.audioKey);
+        if (!blob) {
+            toastr.info('이 기기에는 저장된 음성이 없어요.', 'MultiCast TTS');
+            return;
+        }
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${safeFileName(item.line.speaker)}_${item.mesId}_${safeFileName(item.line.text).slice(0, 20)}.mp3`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (e) {
+        toastr.error(String(e.message ?? e), 'MultiCast TTS');
+    }
+}
+
+/** Delete one line's audio from this device and unpin it everywhere in this chat (next play makes it again). */
+async function deleteClip(key) {
+    const ctx = SillyTavern.getContext();
+    if (clipPlayKey === key) stopPlayback();
+    try { await getStore()?.removeItem(key); } catch { /* ignore */ }
+    const index = await loadIndex();
+    delete index[key];
+    saveIndexSoon();
+    if (memoryUrls.has(key)) {
+        URL.revokeObjectURL(memoryUrls.get(key));
+        memoryUrls.delete(key);
+    }
+    const touched = new Set();
+    (ctx.chat ?? []).forEach((message, mesId) => {
+        const root = message?.extra?.[MODULE_NAME];
+        if (!root) return;
+        const variants = root.variants ?? (Array.isArray(root.script) ? { display: root } : {});
+        for (const entry of Object.values(variants)) {
+            for (const line of entry?.script ?? []) {
+                if (line?.audioKey === key) {
+                    delete line.audioKey;
+                    touched.add(mesId);
+                }
+            }
+        }
+    });
+    if (touched.size) await ctx.saveChat();
+    touched.forEach(id => redecorateMessage(id));
+}
+
+async function openSavedList() {
+    const ctx = SillyTavern.getContext();
+    if (!ctx.chat?.length) {
+        toastr.info('열린 채팅이 없어요.', 'MultiCast TTS');
+        return;
+    }
+    const items = collectSavedLines();
+    const index = await loadIndex();
+    const speakers = [...new Set(items.map(i => i.line.speaker || '?'))].sort();
+
+    const $box = $(`
+        <div class="vc_saved">
+            <div class="vc_saved_head">
+                <b>이 채팅에서 만든 대사 음성</b> <span class="vc_hint">${items.length}개</span>
+            </div>
+            <div class="vc_saved_filters">
+                <select class="text_pole vc_saved_speaker"><option value="">모든 캐릭터</option>${speakers.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</select>
+                <input class="text_pole vc_saved_search" type="search" placeholder="대사 검색" />
+            </div>
+            <div class="vc_saved_list"></div>
+        </div>`);
+    const $list = $box.find('.vc_saved_list');
+
+    const render = () => {
+        const who = String($box.find('.vc_saved_speaker').val() ?? '');
+        const q = String($box.find('.vc_saved_search').val() ?? '').trim().toLowerCase();
+        const shown = items.filter(i => (!who || (i.line.speaker || '?') === who)
+            && (!q || `${i.line.text} ${i.line.orig ?? ''}`.toLowerCase().includes(q)));
+        if (!shown.length) {
+            $list.html('<div class="vc_empty">저장된 대사 음성이 없어요. 메시지를 🔊로 한 번 재생하면 여기에 쌓여요.</div>');
+            return;
+        }
+        $list.empty();
+        let lastGroup = '';
+        for (const item of shown) {
+            const group = `${item.mesId}|${item.vKey}`;
+            if (group !== lastGroup) {
+                lastGroup = group;
+                const name = ctx.chat[item.mesId]?.name ?? '';
+                $list.append(`<div class="vc_saved_group" data-mes="${item.mesId}">#${item.mesId} ${escapeHtml(name)} <span class="vc_hint">· ${escapeHtml(variantLabel(item.vKey))}</span></div>`);
+            }
+            const missing = !index[item.line.audioKey];
+            const $row = $(`
+                <div class="vc_saved_row${missing ? ' vc_missing' : ''}">
+                    <div class="vc_icon_btn vc_clip_play fa-solid fa-play" data-key="${escapeHtml(item.line.audioKey)}" title="듣기"></div>
+                    <div class="vc_saved_text"><b>${escapeHtml(item.line.speaker || '?')}</b> ${escapeHtml(item.line.text)}${missing ? ' <span class="vc_hint">(이 기기에 없음)</span>' : ''}</div>
+                    <div class="vc_icon_btn vc_clip_dl fa-solid fa-download" title="mp3로 받기"></div>
+                    <div class="vc_icon_btn vc_clip_del fa-solid fa-trash-can" title="이 음성 지우기"></div>
+                </div>`);
+            $row.find('.vc_clip_play').on('click', () => playClip(item.line.audioKey));
+            $row.find('.vc_clip_dl').on('click', () => downloadClip(item));
+            $row.find('.vc_clip_del').on('click', async () => {
+                const ok = await ctx.Popup.show.confirm('MultiCast TTS', '이 대사 음성을 지울까요? 다음에 메시지를 재생하면 새로 만들어져요(크레딧 사용).');
+                if (!ok) return;
+                const key = item.line.audioKey;
+                await deleteClip(key);
+                for (let i = items.length - 1; i >= 0; i--) {
+                    if (!items[i].line.audioKey || items[i].line.audioKey === key) items.splice(i, 1);
+                }
+                $box.find('.vc_saved_head .vc_hint').text(`${items.length}개`);
+                render();
+                toastr.success('지웠어요.', 'MultiCast TTS', { timeOut: 1200 });
+            });
+            $list.append($row);
+        }
+        if (clipPlayKey) setClipPlaying(clipPlayKey);
+    };
+    $box.find('.vc_saved_speaker').on('change', render);
+    $box.find('.vc_saved_search').on('input', render);
+    $list.on('click', '.vc_saved_group', function () {
+        const el = document.querySelector(`#chat .mes[mesid="${$(this).data('mes')}"]`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        else toastr.info('채팅을 위로 스크롤해서 그 메시지를 불러와 주세요.', 'MultiCast TTS');
+    });
+    render();
+
+    const popup = new ctx.Popup($box, ctx.POPUP_TYPE.TEXT, '', {
+        okButton: '닫기',
+        wide: true,
+        allowVerticalScrolling: true,
+        leftAlign: true,
+    });
+    popup.dlg?.classList.add('vc_editor_popup');
+    await popup.show();
+    if (clipPlayKey) stopPlayback();
 }
 
 // ---------------------------------------------------------------------------
@@ -1743,6 +2037,7 @@ async function openScriptEditor(messageId) {
         if (result === ctx.POPUP_RESULT.AFFIRMATIVE || result === EDITOR_SAVE_ONLY) {
             if (changed) {
                 await saveEditedScript(messageId, edited);
+                redecorateMessage(messageId);
                 toastr.success('대본을 저장했어요.', 'MultiCast TTS', { timeOut: 1500 });
             }
             if (result === ctx.POPUP_RESULT.AFFIRMATIVE) {
@@ -1817,6 +2112,7 @@ function setVoiceLang(mode) {
     $('#voice_cast_voice_lang').val(mode);
     $('#voice_cast_translate_block').toggle(mode === 'translate');
     updateWandItem();
+    refreshLineButtons({ rebuild: true });
     toastr.info(`음성 언어: ${voiceLangLabel()}`, 'MultiCast TTS', { timeOut: 1500 });
 }
 
@@ -1841,6 +2137,13 @@ function addWandItem() {
         </div>`);
     $item.on('click', cycleVoiceLang);
     $menu.append($item);
+    const $list = $(`
+        <div id="voice_cast_wand_list" class="list-group-item flex-container flexGap5" title="이 채팅에서 만든 대사 음성 모아보기">
+            <div class="extensionsMenuExtensionButton fa-solid fa-list"></div>
+            <span>MultiCast TTS: 저장된 대사 음성</span>
+        </div>`);
+    $list.on('click', openSavedList);
+    $menu.append($list);
     updateWandItem();
 }
 
@@ -1858,6 +2161,7 @@ function settingsHtml() {
                 <label class="checkbox_label"><input id="voice_cast_enabled" type="checkbox" /><span>사용</span></label>
                 <label class="checkbox_label"><input id="voice_cast_auto" type="checkbox" /><span>새 답변 자동 재생</span></label>
                 <label class="checkbox_label" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
+                <label class="checkbox_label" title="이미 만든 음성이 있는 대사 앞에 작은 ▶가 생겨요. 누르면 그 대사만 다시 들어요 (크레딧 안 씀)."><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기 (만든 음성만)</span></label>
                 <label class="checkbox_label" title="새 답변이 오면 분류와 음성 생성을 미리 해둬요. 🔊를 누르면 바로 나와요. 안 들을 메시지에도 크레딧이 쓰여요. (자동 재생이 켜져 있으면 그쪽이 우선)"><input id="voice_cast_pregen" type="checkbox" /><span>새 답변 음성 미리 만들어두기 (재생은 안 함 · 크레딧 사용)</span></label>
                 <label class="checkbox_label"><input id="voice_cast_thoughts" type="checkbox" /><span>속마음(*별표*)도 읽기</span></label>
                 <div class="vc_row">
@@ -1947,6 +2251,7 @@ function settingsHtml() {
                 </div>
                 <div class="vc_row">
                     <span id="voice_cast_cache_stats" class="vc_hint"></span>
+                    <div id="voice_cast_saved_list" class="menu_button menu_button_icon"><i class="fa-solid fa-list"></i><span>이 채팅 음성 목록</span></div>
                     <div id="voice_cast_cache_clear" class="menu_button menu_button_icon"><i class="fa-solid fa-broom"></i><span>전부 지우기</span></div>
                 </div>
 
@@ -2019,6 +2324,9 @@ function bindSettingsUI() {
     bindCheck('#voice_cast_auto', 'autoPlay');
     bindCheck('#voice_cast_pregen', 'pregenerate');
     bindCheck('#voice_cast_quick', 'quickButtons');
+    bindCheck('#voice_cast_line_btns', 'lineButtons');
+    $('#voice_cast_line_btns').on('change', () => refreshLineButtons());
+    $('#voice_cast_saved_list').on('click', openSavedList);
     $('#voice_cast_quick').on('change', applyQuickButtons);
     bindCheck('#voice_cast_thoughts', 'includeThoughts');
     const syncLangUI = () => {
@@ -2246,6 +2554,13 @@ function registerCommands() {
     }));
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'voicecast-list',
+        aliases: ['multicast-list'],
+        callback: async () => { await openSavedList(); return ''; },
+        helpString: '<div>이 채팅에서 만든 대사 음성 목록을 열어요.</div>',
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'voicecast-save',
         aliases: ['multicast-save'],
         callback: async (_args, value) => {
@@ -2295,6 +2610,17 @@ jQuery(async () => {
 
     injectButtons();
     applyQuickButtons();
+    watchChatForLineButtons();
+    refreshLineButtons();
+    // capture phase: a ▶ inside a translator's <summary> must not fold/unfold it
+    document.addEventListener('click', (e) => {
+        const btn = e.target?.closest?.(`.${LINE_BTN}`);
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const messageId = Number(btn.closest('.mes')?.getAttribute('mesid'));
+        if (!Number.isNaN(messageId)) playScriptLine(messageId, Number(btn.dataset.line));
+    }, true);
     $(document).on('click', '.vc_play_btn', onButtonClick);
     $(document).on('click', '.vc_edit_btn', onEditButtonClick);
     $(document).on('click', '.vc_status', (e) => { e.stopPropagation(); stopPlayback(); });
