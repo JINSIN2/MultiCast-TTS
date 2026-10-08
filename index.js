@@ -58,8 +58,10 @@ const defaultSettings = Object.freeze({
     femaleVoiceId: '',
     unknownVoiceId: '',
     sfxEnabled: false,
-    player: false,           // bottom mini player (swipe up / tap the little handle)       // BETA: sound effects as their own script lines (needs a tag model)
+    player: true,           // bottom mini player (swipe up / tap the little handle)       
     sfxVoiceId: '',
+    sfxLocal: true,
+    customSfx: [],           // [{ id, name, words }] — user's own sound files (audio kept in IndexedDB, not in settings)          // bundled CC0 sound files first (free, any model); ElevenLabs tag only when nothing fits
     cast: [],        // shared cast (applies to every bot)
     castByBot: {},   // { 'char:<avatar>' | 'group:<id>': [entries] }
     castAutoSeen: {}, // { botKey: [names already auto-filled] }
@@ -93,7 +95,46 @@ function getSettings() {
         if (Number(s.maxTokens) === 2048) s.maxTokens = 4096;
         s._migratedMaxTokens = true;
     }
+    // Enable the requested player default once for existing installations too.
+    // Later changes made with its checkbox remain respected.
+    if (!s._migratedPlayerDefaultOn) {
+        s.player = true;
+        s._migratedPlayerDefaultOn = true;
+    }
+    // Preserve the previously visible buttons once; future visibility is independent of listening mode.
+    if (!s._migratedIndependentLineButtons) {
+        if (s.readMode === 'all' || s.readMode === 'tap') s.lineButtons = true;
+        s._migratedIndependentLineButtons = true;
+    }
     return s;
+}
+
+// Keep the existing persisted fields compatible with older exported settings.
+function listeningMode() {
+    const s = getSettings();
+    if (s.readMode === 'all' || s.readMode === 'tap') return 'read';
+    return s.autoPlay ? 'auto' : 'manual';
+}
+
+function setListeningMode(mode, precreate = false) {
+    const s = getSettings();
+    s.autoPlay = mode === 'auto';
+    s.readMode = mode === 'read' ? (precreate ? 'all' : 'tap') : 'off';
+    s.pregenerate = mode === 'manual' && !!precreate;
+    save();
+}
+
+function syncListeningUI() {
+    const mode = listeningMode();
+    const s = getSettings();
+    $('#voice_cast_listening_mode').val(mode);
+    $('#voice_cast_precreate_options').toggle(mode !== 'auto');
+    $('#voice_cast_precreate').prop('checked', mode === 'read' ? s.readMode === 'all' : s.pregenerate);
+    $('#voice_cast_listening_hint').text(mode === 'auto'
+        ? '새 답변의 대사를 만들고 바로 재생해요. 음성 생성에 크레딧을 써요.'
+        : mode === 'read'
+            ? '새 답변의 대사를 AI로 분류해요. 아래 ▶ 표시를 켜면 대사별로 들을 수 있어요. 기본적으로 누른 대사만 음성을 만들며, 분류 AI 사용료는 별도예요.'
+            : '메시지의 🔊를 누르면 대사를 분류하고 재생해요. 저장된 음성은 다시 사용해요.');
 }
 
 function save() {
@@ -417,6 +458,7 @@ function buildClassifierPrompt(text, prevText, userNameOverride = null) {
         EMOTION_LADDERS,
         ...(s.sfxEnabled ? [
             '- Sound effects: when the NARRATION clearly describes a distinct, audible sound (e.g. a door creaking or slamming, footsteps, thunder rumbling, clapping, a dog barking, glass shattering, a loud knock, a gunshot), add a SEPARATE entry at the point where it happens: {"speaker":"SFX","gender":"u","type":"sfx","tag":"","text":"[door creaking]"}. "text" is ONE short English sound tag in square brackets. At most 3 per message. Skip quiet or vague sounds, and never put sound tags inside dialogue lines.',
+            `- Prefer these sound tags when one fits: ${[...customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))), SFX_TAG_HINT].join(', ')}.`,
         ] : []),
         '- Also follow each character\'s temperament and acting note (a calm character stays composed; a hot-tempered one reacts sooner and stronger, within their range).',
         '- Output ONLY a valid JSON array. No prose, no markdown, no code fences. Escape any double quote inside a string as \\". If there is nothing to extract, output [].',
@@ -732,9 +774,138 @@ function pickVoice(line) {
 }
 
 /** Sound-effect lines only play when the option is on and the model understands [tags]. */
-function sfxPlayable() {
+function sfxPlayable(line = null) {
     const s = getSettings();
-    return !!s.sfxEnabled && !!modelInfo(s.model).tags;
+    if (!s.sfxEnabled) return false;
+    if (line && localSfxFor(line)) return true;
+    return !!modelInfo(s.model).tags;
+}
+
+// ---------------------------------------------------------------------------
+// Bundled sound effects (CC0) — sfx/<name>.mp3 next to this file.
+// A script line like "[door slamming]" is matched to a file by keywords; "~word" = weak/generic match.
+let SFX_BASE = '/scripts/extensions/third-party/voice-cast/sfx/';
+try { SFX_BASE = new URL('./sfx/', import.meta.url).href; } catch { /* keep the default path */ }
+const SFX_KEY_PREFIX = 'sfxfile:';
+const SFX_LIBRARY = [
+    // sounds we don't ship: never pass these off as something else (falls back to the ElevenLabs tag)
+    { files: [], words: ['phone', 'cellphone', 'ringtone', 'alarm', 'dog', 'bark', 'clap', 'applause', 'heartbeat', 'rain', 'siren', 'car', 'engine', 'horn', 'scream', 'laugh', 'music'] },
+    { files: ['door_slam', 'door_slam_2'], words: ['slam', 'door bang', 'door banging'] },
+    { files: ['door_creak', 'door_creak_2'], words: ['creak', 'squeak'] },
+    { files: ['door_close'], words: ['door close', 'door closing', 'door shut', 'closing door', 'door click'] },
+    { files: ['door_open', 'door_open_2'], words: ['door open', 'opening door', 'door swing', '~door'] },
+    { files: ['knock', 'knock_2'], words: ['knock', 'rap on', 'tapping on door'] },
+    { files: ['footsteps_wood'], words: ['wooden floor', 'floorboard', 'stairs', 'creaking floor'] },
+    { files: ['footsteps_wet'], words: ['wet footsteps', 'puddle', 'splashing steps'] },
+    { files: ['running'], words: ['running', 'run', 'sprint', 'rushing', 'hurried footsteps'] },
+    { files: ['footsteps'], words: ['footstep', 'steps', 'walking', 'pacing', '~approach'] },
+    { files: ['glass_break', 'glass_break_2'], words: ['shatter', 'glass break', 'breaking glass', 'window break', 'glass crash'] },
+    { files: ['glass_clink'], words: ['clink', 'cheers', 'glasses', 'toast'] },
+    { files: ['shotgun'], words: ['shotgun'] },
+    { files: ['pistol'], words: ['pistol', 'handgun', 'revolver'] },
+    { files: ['gunshot', 'gunshot_2', 'gunshot_3'], words: ['gunshot', 'gun', 'shot', 'gunfire', 'rifle', '~bang'] },
+    { files: ['bullet_hit'], words: ['bullet hit', 'bullet impact', 'ricochet', 'bullet strike'] },
+    { files: ['explosion'], words: ['explosion', 'explode', 'blast', 'boom', 'detonat'] },
+    { files: ['thunder'], words: ['thunder', 'lightning', 'rumble'] },
+    { files: ['gong'], words: ['gong'] },
+    { files: ['bell', 'bell_2'], words: ['bell', 'chime', 'ring', 'ding'] },
+    { files: ['unlock'], words: ['unlock', 'lock click', 'lock', 'latch'] },
+    { files: ['key'], words: ['keys', 'key jingl', 'jingl'] },
+    { files: ['paper'], words: ['paper', 'page', 'rustl', 'flipping', 'letter', 'book'] },
+    { files: ['splash'], words: ['splash', 'water', 'plunge', 'dive'] },
+    { files: ['switch'], words: ['switch', 'click', 'button'] },
+    { files: ['dishes'], words: ['dishes', 'plates', 'cutlery', 'clatter'] },
+    { files: ['pot'], words: ['pot', 'pan', 'kettle', 'cooking'] },
+    { files: ['clang'], words: ['clang', 'clank', 'metal', 'sword clash', 'steel'] },
+    { files: ['box_open'], words: ['box', 'lid', 'chest open', 'drawer', 'case open'] },
+    { files: ['pickup'], words: ['pick up', 'picks up', 'grab', 'rummag'] },
+    { files: ['drop'], words: ['drop', 'plop', 'falls to'] },
+    { files: ['smash'], words: ['smash', 'wreck', 'crash'] },
+    { files: ['impact', 'impact_2'], words: ['impact', 'collision', 'heavy hit', 'slammed into', 'crash into'] },
+    { files: ['punch'], words: ['punch', 'slap', 'smack', 'hit', 'strike', 'kick', 'blow'] },
+    { files: ['thud'], words: ['thud', 'thump', 'collapse', 'body fall', 'fall'] },
+    { files: ['wood_crack'], words: ['crack', 'snap', 'branch', 'twig', 'splinter'] },
+    { files: ['stones'], words: ['stone', 'rock', 'rubble', 'gravel', 'pebble'] },
+    { files: ['wind'], words: ['wind', 'breeze', 'howl', 'gust'] },
+    { files: ['whoosh'], words: ['whoosh', 'swish', 'swoosh', 'swing', 'swipe'] },
+];
+const SFX_TAG_HINT = 'door creaking, door slam, door opening, door closing, knock, footsteps, running, glass shattering, glasses clink, gunshot, pistol shot, shotgun, bullet hit, explosion, thunder, bell, gong, unlock, keys, paper rustling, splash, switch click, dishes, pot, metal clang, box opening, pick up, drop, smash, impact, punch, thud, wood cracking, stones, wind, whoosh';
+
+function sfxWords(text) {
+    return String(text ?? '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+}
+
+/** The user's own sounds as library entries (their keywords, or the name when no keywords). */
+function customSfxLibrary() {
+    return (getSettings().customSfx ?? []).filter(c => c?.id).map(c => {
+        const words = String(c.words || c.name || '').split(',').map(w => w.trim()).filter(Boolean);
+        return { files: [CUSTOM_SFX_PREFIX + c.id], words };
+    });
+}
+
+/**
+ * Sound for a sound-effect line: the user's own sounds first, then the bundled ones.
+ * Returns 'name' (bundled) or 'custom:<id>', or '' when nothing fits (then the ElevenLabs tag is used).
+ */
+function localSfxFor(line) {
+    if (line?.type !== 'sfx') return '';
+    const words = sfxWords(line.text);
+    if (!words.length) return '';
+    const mine = matchSfx(words, customSfxLibrary());
+    if (mine) return mine;
+    if (!getSettings().sfxLocal) return '';
+    return matchSfx(words, SFX_LIBRARY);
+}
+
+function matchSfx(words, library) {
+    let best = null;
+    let bestScore = 0;
+    for (const entry of library) {
+        for (const raw of entry.words) {
+            const weak = raw.startsWith('~');
+            const phrase = sfxWords(raw);
+            if (!phrase.length) continue; // e.g. a Korean-only name: nothing to match on
+            // each phrase word must start a word in the tag, in order and next to each other ("slam" ↔ "slamming")
+            let hit = false;
+            for (let i = 0; i + phrase.length <= words.length && !hit; i++) {
+                hit = phrase.every((p, j) => words[i + j].startsWith(p));
+            }
+            if (!hit) continue;
+            if (!entry.files.length) return '';
+            const score = phrase.length * (weak ? 0.5 : 1);
+            if (score > bestScore) { bestScore = score; best = entry; }
+        }
+    }
+    if (!best) return '';
+    // same tag → same variant every time
+    let h = 0;
+    for (const ch of words.join(' ')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return best.files[h % best.files.length];
+}
+
+const CUSTOM_SFX_PREFIX = 'custom:';
+let customSfxStore = null;
+function getCustomSfxStore() {
+    if (customSfxStore) return customSfxStore;
+    const lf = SillyTavern.libs?.localforage ?? globalThis.localforage;
+    if (!lf) return null;
+    // its own database, so "저장된 음성 지우기" and the size limit never touch the user's sounds
+    customSfxStore = lf.createInstance({ name: 'SillyTavern_VoiceCast_SFX', storeName: 'custom' });
+    return customSfxStore;
+}
+
+function isLocalSfxKey(key) {
+    return typeof key === 'string' && key.startsWith(SFX_KEY_PREFIX);
+}
+
+function customSfxIdFromKey(key) {
+    const rest = isLocalSfxKey(key) ? key.slice(SFX_KEY_PREFIX.length) : '';
+    return rest.startsWith(CUSTOM_SFX_PREFIX) ? rest.slice(CUSTOM_SFX_PREFIX.length) : '';
+}
+
+/** Audio pinned to a line that can be replayed without credits (saved clip or bundled sound). */
+function keyHasAudio(key) {
+    return !!key && (isLocalSfxKey(key) || !!storeIndex?.[key]);
 }
 
 function buildTtsText(line) {
@@ -808,6 +979,18 @@ function rememberUrl(key, blob) {
 }
 
 async function getCachedAudio(key) {
+    if (isLocalSfxKey(key)) {
+        const customId = customSfxIdFromKey(key);
+        if (!customId) return SFX_BASE + encodeURIComponent(key.slice(SFX_KEY_PREFIX.length)) + '.mp3';
+        if (memoryUrls.has(key)) return memoryUrls.get(key);
+        try {
+            const blob = await getCustomSfxStore()?.getItem(customId);
+            return blob ? rememberUrl(key, blob) : null;
+        } catch (e) {
+            console.warn(LOG, 'custom sound read failed', e);
+            return null;
+        }
+    }
     if (memoryUrls.has(key)) return memoryUrls.get(key);
     const st = getStore();
     if (!st) return null;
@@ -879,6 +1062,40 @@ function audioCacheKey(text, voiceId, model, stability, similarity) {
  * @returns {Promise<{url: string, key: string}>}
  * @param {boolean} [fresh] skip the cache and store as a separate take (for "make a new take")
  */
+let generationEpoch = 0;
+let generationPaused = false;
+let activeGenerationRequests = 0;
+const generationQueues = new Set();
+
+class GenerationStopped extends Error {
+    constructor() { super('음성 생성이 중지되어 있어요. 설정에서 생성 다시 허용을 눌러 주세요.'); }
+}
+
+function updateGenerationUI() {
+    $('#voice_cast_generation_toggle').text(generationPaused ? '생성 다시 허용' : '음성 생성 중지');
+    $('#voice_cast_generation_status').text(generationPaused
+        ? (activeGenerationRequests
+            ? '생성 중지 · 이미 요청한 ' + activeGenerationRequests + '개는 완료 후 저장해요. 요청 취소·크레딧 환불을 뜻하지 않아요.'
+            : '생성 중지 · 저장된 음성은 들을 수 있어요. 다시 허용해도 취소한 대기열은 자동으로 재시작하지 않아요.')
+        : (activeGenerationRequests ? '음성 생성 요청 처리 중 ' + activeGenerationRequests + '개' : '생성 허용 · 필요한 음성이 없을 때 새로 만들어요.'));
+}
+
+function stopGeneration() {
+    generationPaused = true;
+    generationEpoch++;
+    for (const cancel of generationQueues) cancel();
+    updateGenerationUI();
+}
+
+function resumeGeneration() {
+    generationPaused = false;
+    updateGenerationUI();
+}
+
+function requireGeneration(epoch) {
+    if (generationPaused || epoch !== generationEpoch) throw new GenerationStopped();
+}
+
 const audioInflight = new Map(); // cacheKey -> Promise (preload + play never pay twice for one line)
 
 /** Stability/similarity for a line: the speaker's cast row can override the global sliders. */
@@ -894,11 +1111,15 @@ function voiceSettingsFor(line) {
 }
 
 async function synthesize(text, voiceId, opts = {}) {
+    if (opts.localSfx) {
+        const key = SFX_KEY_PREFIX + opts.localSfx;
+        return { url: await getCachedAudio(key), key };
+    }
     const s = getSettings();
     const fresh = !!opts.fresh;
     const baseKeyPreview = `${s.model}|${voiceId}|${opts.stability ?? s.stability}|${opts.similarity ?? s.similarity}|${text}`;
     if (!fresh && audioInflight.has(baseKeyPreview)) return audioInflight.get(baseKeyPreview);
-    const p = synthesizeInner(text, voiceId, opts);
+    const p = synthesizeInner(text, voiceId, { ...opts, generationToken: opts.generationToken ?? generationEpoch });
     if (!fresh) {
         audioInflight.set(baseKeyPreview, p);
         p.finally(() => audioInflight.delete(baseKeyPreview)).catch(() => {});
@@ -906,7 +1127,7 @@ async function synthesize(text, voiceId, opts = {}) {
     return p;
 }
 
-async function synthesizeInner(text, voiceId, { fresh = false, stability: stabOverride, similarity: simOverride } = {}) {
+async function synthesizeInner(text, voiceId, { fresh = false, stability: stabOverride, similarity: simOverride, generationToken = generationEpoch, generationActive = () => true } = {}) {
     const s = getSettings();
     let stability = Number(stabOverride ?? s.stability);
     const similarity = Number(simOverride ?? s.similarity);
@@ -922,28 +1143,37 @@ async function synthesizeInner(text, voiceId, { fresh = false, stability: stabOv
         if (cached) return { url: cached, key: cacheKey };
     }
 
+    requireGeneration(generationToken);
+    if (!generationActive()) throw new GenerationStopped();
     const { getRequestHeaders } = SillyTavern.getContext();
-    const response = await fetch('/api/speech/elevenlabs/synthesize', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            voiceId,
-            request: {
-                model_id: s.model,
-                text,
-                voice_settings: {
-                    stability,
-                    similarity_boost: similarity,
+    activeGenerationRequests++;
+    updateGenerationUI();
+    try {
+        const response = await fetch('/api/speech/elevenlabs/synthesize', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                voiceId,
+                request: {
+                    model_id: s.model,
+                    text,
+                    voice_settings: {
+                        stability,
+                        similarity_boost: similarity,
+                    },
                 },
-            },
-        }),
-    });
-    if (!response.ok) {
-        throw new Error(`ElevenLabs 요청 실패 (HTTP ${response.status}). 실리태번 서버 콘솔을 확인해 주세요. (402 payment_required면 무료 플랜에서 못 쓰는 목소리예요)`);
+            }),
+        });
+        if (!response.ok) {
+            throw new Error(`ElevenLabs 요청 실패 (HTTP ${response.status}). 실리태번 서버 콘솔을 확인해 주세요. (402 payment_required면 무료 플랜에서 못 쓰는 목소리예요)`);
+        }
+        const blob = await response.blob();
+        await putCachedAudio(cacheKey, blob);
+        return { url: rememberUrl(cacheKey, blob), key: cacheKey };
+    } finally {
+        activeGenerationRequests--;
+        updateGenerationUI();
     }
-    const blob = await response.blob();
-    await putCachedAudio(cacheKey, blob);
-    return { url: rememberUrl(cacheKey, blob), key: cacheKey };
 }
 
 async function fetchVoices() {
@@ -1218,12 +1448,42 @@ function messageVersions(message) {
     });
 }
 
-/** Where the line sits in a text: { lineIdx, segIdx } (segIdx = which quote/asterisk segment, -1 if none). */
+/** Comparable spoken letters, ignoring punctuation and spacing between joined dialogue pieces. */
+function spokenKey(text) {
+    return [...normForMatch(text)].filter(ch => MATCH_CHAR.test(ch)).join('');
+}
+
+/** Where the spoken line sits; segIndices covers dialogue joined across intervening narration. */
 function locateLine(text, needle) {
     const target = normForMatch(needle);
     if (!target) return null;
     const probe = target.length > 16 ? target.slice(0, 16) : target;
     const lines = textLines(text);
+    const spoken = spokenKey(needle);
+    // Try complete groups before the old prefix/fuzzy fallback. A TTS line can contain
+    // two or more quoted pieces while omitting the narration between them.
+    if (spoken) for (let li = 0; li < lines.length; li++) {
+        const segs = lines[li].match(SEGMENT_RE) ?? [];
+        const keys = segs.map(spokenKey);
+        for (let start = 0; start < keys.length; start++) {
+            let joined = '';
+            const indices = [];
+            for (let end = start; end < keys.length; end++) {
+                if (!keys[end]) continue;
+                const candidate = joined + keys[end];
+                if (!spoken.startsWith(candidate)) {
+                    // Italic narration between quotes is not necessarily a spoken thought.
+                    if (indices.length && segs[end].startsWith('*')) continue;
+                    break;
+                }
+                joined = candidate;
+                indices.push(end);
+                if (indices.length > 1 && joined === spoken) {
+                    return { lineIdx: li, segIdx: start, segIndices: indices };
+                }
+            }
+        }
+    }
     for (let li = 0; li < lines.length; li++) {
         const nl = normForMatch(lines[li]);
         if (!nl.includes(target) && !nl.includes(probe)) continue;
@@ -1246,6 +1506,52 @@ function pieceAt(text, pos) {
     return piece.replace(/^[*"\u201C\u300C\u300E]+|[*"\u201D\u300D\u300F]+$/g, '').replace(/[*_~`]/g, '').trim();
 }
 
+/** Match every piece of a joined spoken line, never paint the narration in between. */
+function findPieceRanges(root, text, pos, from = 0) {
+    if (!pos?.segIndices?.length) {
+        const piece = pieceAt(text, pos);
+        const range = piece && findTextRange(root, piece, from);
+        return range ? [range] : [];
+    }
+    const line = textLines(text)[pos.lineIdx];
+    const segments = line?.match(SEGMENT_RE) ?? [];
+    if (pos.segIndices.some(index => !segments[index])) return [];
+    const { full, map } = textIndex(root);
+    const keys = pos.segIndices.map(index => spokenKey(segments[index]));
+    if (keys.some(key => !key)) return [];
+    const maxGap = spokenKey(line).length;
+    // Retry a later first piece if an earlier repeated quote cannot complete the group.
+    function search(startAt, stopBefore = Infinity) {
+        let first = full.indexOf(keys[0], startAt);
+        while (first !== -1 && first < stopBefore) {
+            const spans = [];
+            let cursor = first;
+            for (const key of keys) {
+                const start = full.indexOf(key, cursor);
+                if (start === -1 || start - cursor > maxGap) break;
+                spans.push([start, start + key.length]);
+                cursor = start + key.length;
+            }
+            if (spans.length === keys.length) return spans;
+            first = full.indexOf(keys[0], first + 1);
+        }
+        return null;
+    }
+    const spans = search(from) ?? (from > 0 ? search(0, from) : null);
+    if (!spans) return [];
+    const ranges = spans.map(([start, end]) => {
+        const range = document.createRange();
+        range.setStart(map[start].node, map[start].offset);
+        range.setEnd(map[end - 1].node, map[end - 1].offset + 1);
+        range.vcStart = start;
+        range.vcEnd = end;
+        return range;
+    });
+    // Existing cursor consumers read the first range: advance past the entire spoken group.
+    ranges[0].vcEnd = spans[spans.length - 1][1];
+    return ranges;
+}
+
 /** Side-by-side translation on screen: highlight the line in both languages. */
 function findBilingualRanges(root, message, text) {
     const pairs = bilingualParts(message?.extra?.display_text);
@@ -1261,11 +1567,16 @@ function findBilingualRanges(root, message, text) {
         for (let p = 0; p < pairs[from].length; p++) {
             const pos = locateLine(pairs[from][p], text);
             if (!pos) continue;
-            const own = findTextRange(els[from][p], text) ?? findTextRange(els[from][p], pieceAt(pairs[from][p], pos));
-            const piece = pieceAt(pairs[to][p], { lineIdx: 0, segIdx: pos.segIdx });
-            const other = piece && findTextRange(els[to][p], piece);
-            if (own) ranges.push(own);
-            if (other) ranges.push(other);
+            if (pos.segIndices) {
+                ranges.push(...findPieceRanges(els[from][p], pairs[from][p], pos));
+                ranges.push(...findPieceRanges(els[to][p], pairs[to][p], { ...pos, lineIdx: 0 }));
+            } else {
+                const own = findTextRange(els[from][p], text) ?? findTextRange(els[from][p], pieceAt(pairs[from][p], pos));
+                const piece = pieceAt(pairs[to][p], { lineIdx: 0, segIdx: pos.segIdx });
+                const other = piece && findTextRange(els[to][p], piece);
+                if (own) ranges.push(own);
+                if (other) ranges.push(other);
+            }
             if (ranges.length) return ranges;
         }
     }
@@ -1278,6 +1589,19 @@ function findLineRanges(root, messageId, text, from = 0) {
     if (both.length) {
         both.forEach(r => { delete r.vcEnd; delete r.vcStart; }); // per-paragraph positions, not usable as a message-wide cursor
         return both;
+    }
+    // Resolve complete dialogue groups before a fuzzy match can settle on just the first quote.
+    const versions = messageVersions(message);
+    for (const source of versions) {
+        const pos = locateLine(source, text);
+        if (!pos?.segIndices) continue;
+        const own = findPieceRanges(root, source, pos, from);
+        if (own.length) return own;
+        for (const other of versions) {
+            if (other === source) continue;
+            const translated = findPieceRanges(root, other, pos, from);
+            if (translated.length) return translated;
+        }
     }
     const single = findLineRange(root, message, text, from);
     return single ? [single] : [];
@@ -1439,8 +1763,8 @@ function setNowPlaying(info) {
     updatePlayer();
 }
 
-async function waitWhilePaused(mySession) {
-    while (paused && mySession === session) await sleep(200);
+async function waitWhilePaused(mySession, generationToken = generationEpoch) {
+    while (paused && mySession === session && generationToken === generationEpoch) await sleep(200);
 }
 
 /** ⏯ — pause/resume; when nothing is playing, plays the last message. */
@@ -1544,6 +1868,9 @@ function synthesizeAll(lines, isActive, onProgress = null) {
         const mySession = isActive;
         isActive = () => mySession === session;
     }
+    const token = generationEpoch;
+    const wasActive = isActive;
+    isActive = () => token === generationEpoch && wasActive();
     const limit = Math.max(1, Number(getSettings().concurrency) || 2);
     const results = lines.map(() => {
         let resolve;
@@ -1557,6 +1884,9 @@ function synthesizeAll(lines, isActive, onProgress = null) {
     let running = 0;
     let doneResolve;
     const done = new Promise(r => { doneResolve = r; });
+    const cancel = () => { for (const r of results) r.resolve(null); };
+    generationQueues.add(cancel);
+    done.then(() => generationQueues.delete(cancel));
     const finish = (i, url) => {
         results[i].resolve(url);
         ready++;
@@ -1578,13 +1908,18 @@ function synthesizeAll(lines, isActive, onProgress = null) {
                 }
                 const fresh = !!src?._fresh;
                 if (src) delete src._fresh;
-                const { url, key } = await synthesize(text, voiceId, { fresh, ...voiceSettingsFor(src) });
+                if (!isActive()) break;
+                const { url, key } = await synthesize(text, voiceId, { fresh, ...voiceSettingsFor(src), localSfx: localSfxFor(src), generationToken: token, generationActive: isActive });
                 if (src && src.audioKey !== key) {
                     src.audioKey = key;
                     pinnedChanged = true;
                 }
                 finish(i, url);
             } catch (e) {
+                if (e instanceof GenerationStopped) {
+                    cancel();
+                    break;
+                }
                 console.error(LOG, e);
                 if (firstError) {
                     firstError = false;
@@ -1621,8 +1956,8 @@ function buildPlayableLines(script, { keepThoughts = false } = {}) {
     return script
         .filter(l => keepThoughts || s.includeThoughts || l.type !== 'thought')
         .filter(l => keepThoughts || listenAllows(l))
-        .filter(l => l.type !== 'sfx' || keepThoughts || sfxPlayable())
-        .map(l => ({ src: l, voiceId: pickVoice(l), ttsText: buildTtsText(l) }))
+        .filter(l => l.type !== 'sfx' || keepThoughts || sfxPlayable(l))
+        .map(l => ({ src: l, voiceId: pickVoice(l) || (localSfxFor(l) ? 'local-sfx' : ''), ttsText: buildTtsText(l) }))
         .filter(l => l.voiceId || l.src.audioKey);
 }
 
@@ -1706,6 +2041,7 @@ function hopTo(target, opts) {
 async function playMessage(messageId, { force = false, script: givenScript = null, savedOnly = false, startAt = 0 } = {}) {
     const s = getSettings();
     if (!s.enabled) return;
+    const generationAtStart = generationEpoch;
     if (savedOnly) await loadIndex();
 
     stopPlayback();
@@ -1725,10 +2061,11 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             }
             script = await getScript(messageId, { force });
         }
-        if (mySession !== session) return;
+        if (mySession !== session || generationAtStart !== generationEpoch) return;
 
+        if (generationAtStart !== generationEpoch) return;
         let lines = buildPlayableLines(script, { keepThoughts: !!givenScript });
-        if (savedOnly) lines = lines.filter(l => l.src.audioKey && storeIndex?.[l.src.audioKey]);
+        if (savedOnly) lines = lines.filter(l => keyHasAudio(l.src.audioKey));
         if (!lines.length) {
             if (script.length && !s.maleVoiceId && !s.femaleVoiceId && !s.unknownVoiceId) {
                 toastr.warning('목소리가 설정되지 않았어요. 확장 설정에서 기본 목소리를 골라주세요.', 'MultiCast TTS');
@@ -1743,7 +2080,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
         let ready = 0;
         let playingIndex = -1;
         const render = () => {
-            if (mySession !== session) return;
+            if (mySession !== session || generationAtStart !== generationEpoch) return;
             const gen = ready < total ? `<i class="fa-solid fa-spinner fa-spin"></i> 음성 만드는 중 ${ready}/${total}` : '';
             if (playingIndex < 0) {
                 setStatus(messageId, gen || '<i class="fa-solid fa-spinner fa-spin"></i> 준비 중…');
@@ -1769,6 +2106,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
         const first = startAt === 'last' ? lines.length - 1 : Math.min(Math.max(0, Number(startAt) || 0), lines.length - 1);
         let jumped = first > 0;
         for (let i = first; i < audioPromises.length; i++) {
+            if (generationAtStart !== generationEpoch) break;
             if (playCtl.jump !== null) {
                 // ⏮ goes back one line (i was already moved forward by the loop), ⏭ just continues
                 const d = playCtl.jump;
@@ -1780,7 +2118,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
                 }
             }
             const url = await audioPromises[i];
-            if (mySession !== session) return;
+            if (mySession !== session || generationAtStart !== generationEpoch) return;
             if (!url) continue;
             const lineText = lines[i].src.orig ?? lines[i].src.text;
             if (jumped) {
@@ -1799,10 +2137,10 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
                     } catch { /* ignore */ }
                 }
                 await sleep(pauseBefore(prevPlayed, lines[i].src, narr));
-                if (mySession !== session) return;
+                if (mySession !== session || generationAtStart !== generationEpoch) return;
             }
-            await waitWhilePaused(mySession);
-            if (mySession !== session) return;
+            await waitWhilePaused(mySession, generationAtStart);
+            if (mySession !== session || generationAtStart !== generationEpoch) return;
             playingIndex = i;
             render();
             setNowPlaying({ messageId, line: lines[i].src, index: i, total: lines.length });
@@ -1811,13 +2149,13 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             if (end) hlCursor = end;
             prevPlayed = lines[i].src;
             await playUrl(url, mySession, lines[i].src);
-            if (mySession !== session) return;
+            if (mySession !== session || generationAtStart !== generationEpoch) return;
             // 한 줄씩: stop after each line and wait for ⏭ / ⏮ / ⏯
-            if (getSettings().stepMode && playCtl.jump === null) {
+            if (generationAtStart === generationEpoch && getSettings().stepMode && playCtl.jump === null) {
                 paused = true;
                 updatePlayer();
-                await waitWhilePaused(mySession);
-                if (mySession !== session) return;
+                await waitWhilePaused(mySession, generationAtStart);
+                if (mySession !== session || generationAtStart !== generationEpoch) return;
                 if (playCtl.jump === null && i === audioPromises.length - 1) playCtl.jump = 1; // ⏯ on the last line → go on
                 prevPlayed = null; // no extra breathing pause after a manual step
             }
@@ -1836,13 +2174,13 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             clearHighlight();
             if (messageId !== null) {
                 setButtonState(messageId, false);
-                if (!failed) setStatus(messageId, '<i class="fa-solid fa-check"></i> 끝', 'done');
+                if (!failed) setStatus(messageId, generationAtStart !== generationEpoch ? '생성 대기열 중지됨' : '<i class="fa-solid fa-check"></i> 끝', 'done');
             }
             playingMessageId = null;
             currentAudio = null;
             paused = false;
             setNowPlaying(null);
-            if (!failed && !givenScript && messageId !== null) {
+            if (!failed && !givenScript && messageId !== null && generationAtStart === generationEpoch) {
                 if (crossDir) {
                     // ⏮/⏭ past the edge: hop to the previous/next message that already has audio (no credits)
                     const target = adjacentSavedMessage(messageId, crossDir);
@@ -1963,7 +2301,7 @@ function isVoicedLine(script, line) {
 function findStepTarget(from, dir, make) {
     const chat = SillyTavern.getContext().chat ?? [];
     const ok = (script, line) => line && isVoicedLine(script, line)
-        && ((line.audioKey && storeIndex?.[line.audioKey]) || make);
+        && (keyHasAudio(line.audioKey) || make);
     let mesId = from.messageId;
     let start = from.index + dir;
     for (let hops = 0; hops < 200 && mesId >= 0 && mesId < chat.length; hops++) {
@@ -1998,13 +2336,14 @@ function stepLine(dir, { quiet = false } = {}) {
     return true;
 }
 
-async function playScriptLine(messageId, index) {
+async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
     if (linePlay && linePlay.messageId === messageId && linePlay.index === index) {
         stopPlayback();
         return;
     }
     stopPlayback();
     lastLine = { messageId, index };
+    const generationAtStart = generationEpoch;
     const mySession = session;
     const ctx = SillyTavern.getContext();
     const storedScript = getStoredEntry(ctx.chat[messageId])?.script;
@@ -2012,10 +2351,11 @@ async function playScriptLine(messageId, index) {
     const line = storedScript?.[index];
     if (!line) return;
     let url = line.audioKey ? await getCachedAudio(line.audioKey) : null;
-    if (mySession !== session) return;
+    if (mySession !== session || generationAtStart !== generationEpoch) return;
     if (!url && (readMode() !== 'off' || (getSettings().continuePlay && getSettings().continueMode === 'all'))) {
         // read mode (or 이어 듣기 '전부'): make just this line now
-        const voiceId = pickVoice(line);
+        const localSfx = localSfxFor(line);
+        const voiceId = pickVoice(line) || (localSfx ? 'local-sfx' : '');
         if (!voiceId) {
             toastr.warning('이 대사에 쓸 목소리가 없어요. 캐스트나 기본 목소리를 지정해 주세요.', 'MultiCast TTS');
             return;
@@ -2023,7 +2363,7 @@ async function playScriptLine(messageId, index) {
         const $btn = $(`#chat .mes[mesid="${messageId}"] .${LINE_BTN}[data-line="${index}"]`);
         $btn.addClass('vc_line_loading fa-spinner fa-spin').removeClass('fa-circle-play');
         try {
-            const made = await synthesize(buildTtsText(line), voiceId, voiceSettingsFor(line));
+            const made = await synthesize(buildTtsText(line), voiceId, { ...voiceSettingsFor(line), localSfx });
             line.audioKey = made.key;
             url = made.url;
             if (ctx.chat === SillyTavern.getContext().chat) ctx.saveChat();
@@ -2032,7 +2372,7 @@ async function playScriptLine(messageId, index) {
             toastr.error(String(e.message ?? e), 'MultiCast TTS');
         }
         redecorateMessage(messageId);
-        if (mySession !== session || !url) return;
+        if (mySession !== session || generationAtStart !== generationEpoch || !url) return;
     }
     if (!url) {
         toastr.info('이 기기에는 이 대사 음성이 없어요. 🔊로 메시지를 재생하면 다시 만들어져요.', 'MultiCast TTS');
@@ -2052,7 +2392,7 @@ async function playScriptLine(messageId, index) {
         setNowPlaying(null);
         // 이어 듣기 (not in 한 줄씩 mode): go on line by line, across messages that have audio
         const s = getSettings();
-        if (s.continuePlay && !s.stepMode) {
+        if (!singleOnly && s.continuePlay && !s.stepMode && generationAtStart === generationEpoch) {
             const make = readMode() !== 'off' || s.continueMode === 'all';
             const target = findStepTarget({ messageId, index }, 1, make);
             if (target) {
@@ -2098,7 +2438,7 @@ function collectSavedLines() {
         const variants = root.variants ?? (Array.isArray(root.script) ? { display: root } : {});
         for (const [vKey, entry] of Object.entries(variants)) {
             (entry?.script ?? []).forEach((line) => {
-                if (line?.audioKey) out.push({ mesId, vKey, line });
+                if (line?.audioKey && !isLocalSfxKey(line.audioKey)) out.push({ mesId, vKey, line });
             });
         }
     }
@@ -2275,7 +2615,7 @@ function characterColor(name) {
     return `hsl(${h}, 70%, 72%)`;
 }
 
-let playerOpen = false;
+let playerOpen = true;
 
 /** The player lives in the page flow right above the input bar (re-docks if ST rebuilt it). */
 function placePlayer() {
@@ -2296,7 +2636,7 @@ function setPlayerOpen(open) {
 function buildPlayer() {
     if (document.getElementById('vc_player')) return;
     const $p = $(`
-        <div id="vc_player" class="vc_player" data-open="0" data-state="idle">
+        <div id="vc_player" class="vc_player" data-open="1" data-state="idle">
             <div class="vc_player_handle" title="MultiCast 플레이어 (위로 밀거나 눌러서 열기)">
                 <span class="vc_handle_bar"></span>
                 <span class="vc_eq vc_handle_eq"><i></i><i></i><i></i></span>
@@ -2387,11 +2727,13 @@ function safeFileName(str) {
 }
 
 async function downloadMessageAudio(messageId, scriptOverride = null) {
+    const generationAtStart = generationEpoch;
     const ctx = SillyTavern.getContext();
     const message = ctx.chat[messageId];
     if (!message) return;
     try {
         const script = scriptOverride ?? await getScript(messageId);
+        if (generationAtStart !== generationEpoch) return;
         const lines = buildPlayableLines(script, { keepThoughts: !!scriptOverride });
         if (!lines.length) {
             toastr.info('저장할 대사가 없어요.', 'MultiCast TTS');
@@ -2405,6 +2747,7 @@ async function downloadMessageAudio(messageId, scriptOverride = null) {
         );
         if (!scriptOverride) savePinsWhenDone(done, messageId);
         const urls = await Promise.all(promises);
+        if (generationAtStart !== generationEpoch) return;
         const parts = [];
         for (const url of urls) {
             if (!url) continue;
@@ -2504,11 +2847,13 @@ function isPrepared(messageId) {
 
 /** Read mode: get the message ready for reading along — no editor, no playback, just ▶ next to the lines. */
 async function prepareMessage(messageId) {
+    const token = generationEpoch;
     if (readMode() === 'all') return preloadMessage(messageId, { readAlong: true });
     const show = (html, state) => { if (playingMessageId !== messageId) setStatus(messageId, html, state); };
     try {
         show('<i class="fa-solid fa-spinner fa-spin"></i> 대사 분류 중…');
         await getScript(messageId);
+        if (token !== generationEpoch) return show('생성 대기열 중지됨', 'done');
         redecorateMessage(messageId);
         show('<i class="fa-solid fa-circle-play"></i> 준비됨 · 대사 ▶를 눌러 들어요', 'done');
     } catch (e) {
@@ -2532,6 +2877,8 @@ async function reclassifyAndPlay(messageId) {
 // ---------------------------------------------------------------------------
 
 async function onCharacterMessageRendered(messageId, type) {
+    const token = generationEpoch;
+    if (generationPaused) return;
     const s = getSettings();
     if (!s.enabled || (!s.autoPlay && !s.pregenerate && readMode() === 'off')) return;
     if (type === 'first_message') return;
@@ -2548,7 +2895,7 @@ async function onCharacterMessageRendered(messageId, type) {
         }
     }
     // the chat might have changed while waiting
-    if (SillyTavern.getContext().chat[messageId] !== message) return;
+    if (SillyTavern.getContext().chat[messageId] !== message || token !== generationEpoch || generationPaused) return;
     if (readMode() !== 'off') prepareMessage(messageId);
     else if (s.autoPlay) playMessage(messageId);
     else preloadMessage(messageId);
@@ -2556,8 +2903,9 @@ async function onCharacterMessageRendered(messageId, type) {
 
 /** Classify + generate a message's audio in the background without playing it. */
 async function preloadMessage(messageId, { readAlong = false } = {}) {
+    const token = generationEpoch;
     const chatAtStart = SillyTavern.getContext().chat;
-    const isActive = () => SillyTavern.getContext().chat === chatAtStart
+    const isActive = () => token === generationEpoch && !generationPaused && getSettings().enabled && SillyTavern.getContext().chat === chatAtStart
         && (readAlong ? readMode() === 'all' : getSettings().pregenerate);
     const show = (html, state) => { if (playingMessageId !== messageId) setStatus(messageId, html, state); };
     try {
@@ -2664,6 +3012,104 @@ function addDefaultPreviewButtons() {
         // picking another voice while one plays → play the new one right away
         if (previewBtn) playVoicePreview(String($sel.val() ?? ''), $sel.next('.vc_voice_prev')[0]);
     });
+}
+
+// ---------------------------------------------------------------------------
+// 내 효과음 (user sound files)
+const CUSTOM_SFX_MAX_MB = 5;
+
+function renderCustomSfxList() {
+    const list = getSettings().customSfx ?? [];
+    const $list = $('#voice_cast_custom_sfx_list').empty();
+    if (!list.length) {
+        $list.append('<div class="vc_hint vc_sub">아직 없어요.</div>');
+        return;
+    }
+    for (const c of list) {
+        const $row = $(`
+            <div class="vc_custom_sfx_row" data-id="${escapeHtml(c.id)}">
+                <div class="vc_icon_btn vc_custom_sfx_play fa-solid fa-play" title="들어보기"></div>
+                <input class="text_pole vc_custom_sfx_name" type="text" placeholder="이름" />
+                <input class="text_pole vc_custom_sfx_words" type="text" placeholder="영어 단어 (쉼표로)" />
+                <div class="vc_icon_btn vc_custom_sfx_del fa-solid fa-trash-can" title="지우기"></div>
+            </div>`);
+        $row.find('.vc_custom_sfx_name').val(c.name ?? '');
+        $row.find('.vc_custom_sfx_words').val(c.words ?? '');
+        $list.append($row);
+    }
+}
+
+function bindCustomSfxUI() {
+    const s = getSettings();
+    if (!Array.isArray(s.customSfx)) s.customSfx = [];
+    renderCustomSfxList();
+    $('#voice_cast_custom_sfx_add').on('click', () => $('#voice_cast_custom_sfx_file').trigger('click'));
+    $('#voice_cast_custom_sfx_file').on('change', async function () {
+        const files = [...(this.files ?? [])];
+        this.value = '';
+        const st = getCustomSfxStore();
+        if (!st) {
+            toastr.error('이 브라우저에서는 파일을 저장할 수 없어요.', 'MultiCast TTS');
+            return;
+        }
+        let added = 0;
+        for (const file of files) {
+            if (file.size > CUSTOM_SFX_MAX_MB * 1024 * 1024) {
+                toastr.warning(`${file.name}: ${CUSTOM_SFX_MAX_MB}MB보다 커서 건너뛰었어요. 짧은 소리만 넣어주세요.`, 'MultiCast TTS');
+                continue;
+            }
+            const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+            try {
+                await st.setItem(id, file);
+            } catch (e) {
+                console.warn(LOG, e);
+                toastr.error(`${file.name}: 저장하지 못했어요.`, 'MultiCast TTS');
+                continue;
+            }
+            const base = file.name.replace(/\.[^.]+$/, '');
+            const words = base.toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+            s.customSfx.push({ id, name: base, words });
+            added++;
+        }
+        if (added) {
+            save();
+            renderCustomSfxList();
+            toastr.success(`내 효과음 ${added}개를 추가했어요. 영어 단어를 확인해 주세요.`, 'MultiCast TTS');
+        }
+    });
+    $('#voice_cast_custom_sfx_list')
+        .on('input change', '.vc_custom_sfx_name, .vc_custom_sfx_words', function () {
+            const id = $(this).closest('.vc_custom_sfx_row').data('id');
+            const c = s.customSfx.find(x => String(x.id) === String(id));
+            if (!c) return;
+            if ($(this).hasClass('vc_custom_sfx_name')) c.name = String($(this).val());
+            else c.words = String($(this).val());
+            save();
+        })
+        .on('click', '.vc_custom_sfx_play', async function () {
+            const id = $(this).closest('.vc_custom_sfx_row').data('id');
+            const url = await getCachedAudio(SFX_KEY_PREFIX + CUSTOM_SFX_PREFIX + id);
+            if (!url) {
+                toastr.warning('파일을 찾을 수 없어요. 지우고 다시 추가해 주세요.', 'MultiCast TTS');
+                return;
+            }
+            const audio = new Audio(url);
+            const master = Number(getSettings().volume);
+            audio.volume = Math.min(1, Number.isNaN(master) ? 1 : Math.max(0, master));
+            audio.play().catch(() => {});
+        })
+        .on('click', '.vc_custom_sfx_del', async function () {
+            const id = String($(this).closest('.vc_custom_sfx_row').data('id'));
+            s.customSfx = s.customSfx.filter(x => String(x.id) !== id);
+            save();
+            await getCustomSfxStore()?.removeItem(id).catch(() => {});
+            const key = SFX_KEY_PREFIX + CUSTOM_SFX_PREFIX + id;
+            if (memoryUrls.has(key)) {
+                URL.revokeObjectURL(memoryUrls.get(key));
+                memoryUrls.delete(key);
+            }
+            renderCustomSfxList();
+        });
 }
 
 function renderVoiceSelects() {
@@ -3116,6 +3562,8 @@ async function importSettings(file) {
     if (s.profileId && !profiles.some(pr => pr.id === s.profileId)) s.profileId = '';
     getSettings(); // re-validate shapes
     save();
+    syncListeningUI();
+    renderCustomSfxList();
     renderVoiceSelects();
     toastr.success('설정을 가져왔어요. 새로고침하면 모든 칸에 반영돼요.', 'MultiCast TTS');
 }
@@ -3157,13 +3605,13 @@ function setSfx(on) {
     if (on && !modelInfo(getSettings().model).tags) {
         toastr.warning('지금 모델은 [태그]를 몰라서 효과음이 안 나와요. Eleven v3나 v4를 골라주세요.', 'MultiCast TTS');
     } else {
-        toastr.info(`효과음 ${on ? '켬 (BETA)' : '끔'}`, 'MultiCast TTS', { timeOut: 1500 });
+        toastr.info(`효과음 ${on ? '켬' : '끔'}`, 'MultiCast TTS', { timeOut: 1500 });
     }
 }
 
 function updateWandItem() {
     $('#voice_cast_wand_label').text(`MultiCast TTS: ${voiceLangLabel()}`);
-    $('#voice_cast_wand_sfx_label').text(`MultiCast TTS: 효과음 ${getSettings().sfxEnabled ? '켜짐' : '꺼짐'} (BETA)`);
+    $('#voice_cast_wand_sfx_label').text(`MultiCast TTS: 효과음 ${getSettings().sfxEnabled ? '켜짐' : '꺼짐'}`);
 }
 
 function addWandItem() {
@@ -3185,7 +3633,7 @@ function addWandItem() {
     $list.on('click', openSavedList);
     $menu.append($list);
     const $sfx = $(`
-        <div id="voice_cast_wand_sfx" class="list-group-item flex-container flexGap5" title="효과음 켜기/끄기 (BETA)">
+        <div id="voice_cast_wand_sfx" class="list-group-item flex-container flexGap5" title="효과음 켜기/끄기">
             <div class="extensionsMenuExtensionButton fa-solid fa-bell"></div>
             <span id="voice_cast_wand_sfx_label"></span>
         </div>`);
@@ -3202,14 +3650,32 @@ function settingsHtml() {
     <div id="voice_cast_settings" class="extension_settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>MultiCast TTS</b>
+                <b><svg xmlns="http://www.w3.org/2000/svg" class="vc_title_icon" aria-hidden="true" focusable="false" viewBox="0 0 64 64"><path d="M12 38V29C12 17.95 20.95 9 32 9s20 8.95 20 20v9" fill="none" stroke="#F52D56" stroke-width="6" stroke-linecap="round"/><path d="M32 11C32 3 39 1 46 3c-2 7-7 10-14 8Z" fill="#26B576"/><rect x="6" y="32" width="17" height="23" rx="8.5" fill="#F52D56"/><rect x="41" y="32" width="17" height="23" rx="8.5" fill="#F52D56"/></svg> MultiCast TTS</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
                 <label class="checkbox_label"><input id="voice_cast_enabled" type="checkbox" /><span>사용</span></label>
                 <div class="vc_row">
-                    <div id="voice_cast_stop" class="menu_button menu_button_icon"><i class="fa-solid fa-stop"></i><span>정지</span></div>
+                    <div id="voice_cast_stop" class="menu_button menu_button_icon"><i class="fa-solid fa-stop"></i><span>재생 정지</span></div>
+                    <button type="button" id="voice_cast_generation_toggle" class="menu_button">음성 생성 중지</button>
                     <div id="voice_cast_show_script" class="menu_button menu_button_icon"><i class="fa-solid fa-scroll"></i><span>마지막 대본 편집</span></div>
+                </div>
+                <div id="voice_cast_generation_status" class="vc_hint" role="status" aria-live="polite"></div>
+                <div class="vc_hint">재생 정지는 현재 재생과 그 재생의 대기열을 멈춰요. 음성 생성 중지는 미리 만들기를 포함한 새 생성을 막고, 현재 듣는 대사는 끝까지 재생해요.</div>
+                <div class="vc_listening_setup">
+                    <label for="voice_cast_listening_mode">듣는 방식</label>
+                    <select id="voice_cast_listening_mode" class="text_pole">
+                        <option value="manual">눌러서 듣기</option>
+                        <option value="auto">새 답변 자동으로 듣기</option>
+                        <option value="read">읽다가 대사만 듣기</option>
+                    </select>
+                    <div id="voice_cast_listening_hint" class="vc_hint"></div>
+                    <label class="checkbox_label"><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기</span></label>
+                    <div class="vc_hint vc_sub">저장된 음성이 있는 대사에 ▶가 생겨요. '읽다가 대사만 듣기'에서는 끄더라도 항상 보여요. 이어듣기를 켜면 ▶부터 쭉 이어서 들어요.</div>
+                    <div id="voice_cast_precreate_options">
+                        <label class="checkbox_label"><input id="voice_cast_precreate" type="checkbox" /><span>새 답변 음성을 미리 만들어두기</span></label>
+                        <div class="vc_hint vc_sub">누르면 바로 들을 수 있지만, 듣지 않은 대사도 생성 크레딧을 써요.</div>
+                    </div>
                 </div>
                 <details class="vc_group" data-group="start">
                     <summary class="vc_group_title">🔑 시작하기 · 키 · 모델 · 기본 목소리</summary>
@@ -3275,18 +3741,6 @@ function settingsHtml() {
                 <details class="vc_group" data-group="play">
                     <summary class="vc_group_title">▶️ 재생</summary>
                     <div class="vc_group_body">
-                <label class="checkbox_label"><input id="voice_cast_auto" type="checkbox" /><span>새 답변 자동 재생</span></label>
-                <div class="vc_row">
-                    <label for="voice_cast_read_mode">📖 읽으면서 듣기</label>
-                    <select id="voice_cast_read_mode" class="text_pole" style="width:auto">
-                        <option value="off">끄기</option>
-                        <option value="all">미리 다 만들기 (누르면 바로 · 크레딧 전부)</option>
-                        <option value="tap">누를 때 만들기 (들은 대사만 크레딧)</option>
-                    </select>
-                </div>
-                <div class="vc_hint">켜면 새 답변이 와도 자동 재생·편집창 없이 대사 앞에 ▶만 생겨요. 읽다가 듣고 싶은 대사만 눌러요. 🔊는 처음엔 '준비', 준비된 뒤 누르면 전체 재생이에요.</div>
-                <label class="checkbox_label" title="새 답변이 오면 분류와 음성 생성을 미리 해둬요. 🔊를 누르면 바로 나와요. 안 들을 메시지에도 크레딧이 쓰여요. (자동 재생이 켜져 있으면 그쪽이 우선)"><input id="voice_cast_pregen" type="checkbox" /><span>새 답변 음성 미리 만들어두기</span></label>
-                <div class="vc_hint vc_sub">재생은 안 하고 만들어만 둬요 · 크레딧 사용</div>
                 <div class="vc_row">
                     <label for="voice_cast_pacing">🌬️ 호흡 (대사 사이 쉼)</label>
                     <select id="voice_cast_pacing" class="text_pole" style="width:auto">
@@ -3331,8 +3785,6 @@ function settingsHtml() {
                 <label class="checkbox_label" title="입력창 위에 작은 손잡이가 생겨요. 위로 밀거나 누르면 플레이어가 올라와요."><input id="voice_cast_player" type="checkbox" /><span>🎧 하단 플레이어</span></label>
                 <div class="vc_hint vc_sub">입력창 위 짧은 선을 위로 밀거나 눌러서 열어요</div>
                 <label class="checkbox_label" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
-                <label class="checkbox_label" title="이미 만든 음성이 있는 대사 앞에 작은 ▶가 생겨요. 누르면 그 대사만 다시 들어요 (크레딧 안 씀)."><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기</span></label>
-                <div class="vc_hint vc_sub">이미 만든 음성이 있는 대사에만 생겨요</div>
                 <label class="checkbox_label"><input id="voice_cast_highlight" type="checkbox" /><span>읽는 대사 채팅에 형광펜 표시</span></label>
                     </div>
                 </details>
@@ -3398,11 +3850,22 @@ function settingsHtml() {
                     </div>
                 </details>
                 <details class="vc_group" data-group="sfx">
-                    <summary class="vc_group_title">🔔 효과음 <span class="vc_beta">BETA</span></summary>
+                    <summary class="vc_group_title">🔔 효과음</summary>
                     <div class="vc_group_body">
                 <label class="checkbox_label"><input id="voice_cast_sfx" type="checkbox" /><span>효과음 넣기</span></label>
                 <div class="vc_hint vc_sub">지문의 문 쾅, 발소리 같은 소리를 대본에 따로 한 줄로 넣어요</div>
-                <div class="vc_hint">Eleven v3 / v4 / v4 Turbo처럼 [태그]를 아는 모델에서만 나와요. 효과음은 대사와 섞지 않고 대본에 🔔 효과음 줄로 따로 들어가서, 편집기에서 고치거나 지울 수 있어요. 켠 뒤 새로 분류하는 메시지부터 들어가요. 품질은 아직 들쭉날쭉해요.</div>
+                <label class="checkbox_label"><input id="voice_cast_sfx_local" type="checkbox" /><span>내장 효과음 파일 먼저 쓰기</span></label>
+                <div class="vc_hint vc_sub">문, 발소리, 총소리, 천둥 등 47개 소리가 들어 있어요. 크레딧을 안 쓰고 어느 모델에서나 나와요.</div>
+                <div class="vc_hint">내장 소리에 맞는 게 없으면 ElevenLabs [태그]로 만들어요. 이건 Eleven v3 / v4 / v4 Turbo처럼 [태그]를 아는 모델에서만 나와요. 효과음은 대사와 섞지 않고 대본에 🔔 효과음 줄로 따로 들어가서, 편집기에서 고치거나 지울 수 있어요. 켠 뒤 새로 분류하는 메시지부터 들어가요.</div>
+                <div class="vc_custom_sfx">
+                    <div class="vc_row vc_custom_sfx_head">
+                        <b>🎧 내 효과음</b>
+                        <div id="voice_cast_custom_sfx_add" class="menu_button menu_button_icon" title="내 기기의 소리 파일을 추가해요"><i class="fa-solid fa-plus"></i><span>파일 추가</span></div>
+                        <input id="voice_cast_custom_sfx_file" type="file" accept="audio/*" multiple hidden />
+                    </div>
+                    <div class="vc_hint">내장 소리보다 먼저 써요. 오른쪽 칸에 이 소리가 나올 <b>영어 단어</b>를 쉼표로 적어주세요 (예: phone ring, ringtone). 파일은 이 브라우저에만 저장돼요. 다른 기기에서는 다시 추가해야 해요.</div>
+                    <div id="voice_cast_custom_sfx_list" class="vc_custom_sfx_list"></div>
+                </div>
                 <label for="voice_cast_sfx_voice">효과음에 쓸 목소리 (비우면 '성별 모름' 목소리)</label>
                 <select id="voice_cast_sfx_voice" class="text_pole"></select>
                     </div>
@@ -3465,17 +3928,31 @@ function bindSettingsUI() {
 
     bindCheck('#voice_cast_enabled', 'enabled');
     $('#voice_cast_enabled').on('change', applyPlayerSetting);
-    bindCheck('#voice_cast_auto', 'autoPlay');
-    bindCheck('#voice_cast_pregen', 'pregenerate');
+    syncListeningUI();
+    updateGenerationUI();
+    $('#voice_cast_listening_mode').on('change', function () {
+        stopPlayback();
+        generationEpoch++;
+        for (const cancel of generationQueues) cancel();
+        setListeningMode(String($(this).val()), false);
+        syncListeningUI();
+        refreshLineButtons({ rebuild: true });
+    });
+    $('#voice_cast_precreate').on('change', function () {
+        generationEpoch++;
+        for (const cancel of generationQueues) cancel();
+        setListeningMode(listeningMode(), !!this.checked);
+        syncListeningUI();
+        refreshLineButtons({ rebuild: true });
+    });
+    $('#voice_cast_generation_toggle').on('click', () => {
+        if (generationPaused) resumeGeneration();
+        else stopGeneration();
+    });
     bindCheck('#voice_cast_quick', 'quickButtons');
     bindCheck('#voice_cast_player', 'player');
     $('#voice_cast_player').on('change', applyPlayerSetting);
     bindCheck('#voice_cast_line_btns', 'lineButtons');
-    $('#voice_cast_read_mode').val(readMode()).on('change', function () {
-        s.readMode = String($(this).val());
-        save();
-        refreshLineButtons({ rebuild: true });
-    });
     $('#voice_cast_line_btns').on('change', () => refreshLineButtons());
     $('#voice_cast_saved_list').on('click', openSavedList);
     $('#voice_cast_quick').on('change', applyQuickButtons);
@@ -3636,6 +4113,8 @@ function bindSettingsUI() {
     $('#voice_cast_female_voice').on('change', function () { s.femaleVoiceId = String($(this).val()); save(); });
     $('#voice_cast_unknown_voice').on('change', function () { s.unknownVoiceId = String($(this).val()); save(); });
     $('#voice_cast_sfx_voice').on('change', function () { s.sfxVoiceId = String($(this).val()); save(); });
+    bindCustomSfxUI();
+    $('#voice_cast_sfx_local').prop('checked', s.sfxLocal !== false).on('change', function () { s.sfxLocal = !!this.checked; save(); });
     $('#voice_cast_sfx').prop('checked', !!s.sfxEnabled).on('change', function () { setSfx($(this).prop('checked')); });
     $('#voice_cast_load_voices').on('click', () => loadVoices(true).catch(() => {}));
     $('#voice_cast_check').on('click', checkConnection);

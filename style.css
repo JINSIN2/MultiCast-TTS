@@ -675,3 +675,64 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 #voice_cast_settings .vc_listen_list .checkbox_label {
     margin: 4px 0;
 }
+
+/* Cherry-pink headphones with a little leaf in the panel title. */
+#voice_cast_settings .vc_title_icon {
+    display: inline-block;
+    width: 1.45em;
+    height: 1.45em;
+    margin-right: 4px;
+    vertical-align: -0.44em;
+    overflow: visible;
+}
+
+#voice_cast_settings .vc_listening_setup {
+    margin: 12px 0;
+    padding: 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+}
+
+/* 내 효과음 */
+#voice_cast_settings .vc_custom_sfx {
+    margin: 10px 0;
+    padding: 8px 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+}
+#voice_cast_settings .vc_custom_sfx_head {
+    justify-content: space-between;
+    align-items: center;
+}
+#voice_cast_settings .vc_custom_sfx_list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 6px;
+}
+#voice_cast_settings .vc_custom_sfx_row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+#voice_cast_settings .vc_custom_sfx_name {
+    flex: 0 1 30%;
+    min-width: 0;
+    margin: 0;
+}
+#voice_cast_settings .vc_custom_sfx_words {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+}
+#voice_cast_settings .vc_custom_sfx_play,
+#voice_cast_settings .vc_custom_sfx_del {
+    flex: 0 0 auto;
+    cursor: pointer;
+    opacity: 0.8;
+}
+#voice_cast_settings .vc_custom_sfx_play:hover,
+#voice_cast_settings .vc_custom_sfx_del:hover {
+    opacity: 1;
+}
