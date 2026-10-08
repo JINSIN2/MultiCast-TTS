@@ -614,3 +614,29 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 #voice_cast_settings .vc_conn_status[data-state="error"] {
     color: #ef7a7a;
 }
+
+/* ---- Voice sample preview ---- */
+.vc_voice_prev {
+    cursor: pointer;
+    opacity: 0.7;
+    padding: 0 4px;
+    font-size: 1.05em;
+    align-self: center;
+}
+
+.vc_voice_prev:hover,
+.vc_voice_prev.vc_previewing {
+    opacity: 1;
+    color: var(--active, #e8a33d);
+}
+
+#voice_cast_settings .vc_voice_pick {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+#voice_cast_settings .vc_voice_pick > select {
+    flex: 1 1 auto;
+    min-width: 0;
+}

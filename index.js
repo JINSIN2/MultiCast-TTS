@@ -962,6 +962,7 @@ async function fetchVoices() {
         name: v.name,
         gender: v.labels?.gender ?? '',
         category: v.category ?? '',
+        preview: v.preview_url ?? '',
     }));
 }
 
@@ -2499,12 +2500,72 @@ function escapeHtml(str) {
     return String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[c]));
 }
 
+// --- Voice sample preview (ElevenLabs' own sample clip — free, no credits) ---
+
+let previewAudio = null;
+let previewBtn = null;
+
+function stopPreview() {
+    previewAudio?.pause();
+    previewAudio = null;
+    $(previewBtn).removeClass('fa-circle-stop vc_previewing').addClass('fa-circle-play');
+    previewBtn = null;
+}
+
+async function playVoicePreview(voiceId, btn) {
+    if (previewBtn === btn) { stopPreview(); return; }
+    stopPreview();
+    if (!voiceId) {
+        toastr.info('먼저 목소리를 골라주세요.', 'MultiCast TTS', { timeOut: 1500 });
+        return;
+    }
+    if (!voiceList.length) await loadVoices(false).catch(() => {});
+    const v = voiceList.find(x => x.id === voiceId);
+    if (!v?.preview) {
+        toastr.info('이 목소리는 일레븐랩스에 샘플이 없어요.', 'MultiCast TTS', { timeOut: 2000 });
+        return;
+    }
+    const audio = new Audio(v.preview);
+    const master = Number(getSettings().volume);
+    audio.volume = Math.min(1, Number.isNaN(master) ? 1 : Math.max(0, master));
+    previewAudio = audio;
+    previewBtn = btn;
+    $(btn).addClass('fa-circle-stop vc_previewing').removeClass('fa-circle-play');
+    audio.onended = () => { if (previewAudio === audio) stopPreview(); };
+    audio.onerror = () => { if (previewAudio === audio) { stopPreview(); toastr.warning('샘플을 재생하지 못했어요.', 'MultiCast TTS'); } };
+    audio.play().catch(() => { if (previewAudio === audio) stopPreview(); });
+}
+
+/** A small ▶ that plays the sample of whatever voice `getId()` returns. */
+function previewButton(getId) {
+    const $b = $('<div class="vc_voice_prev fa-solid fa-circle-play" title="목소리 샘플 듣기 (크레딧 안 씀)"></div>');
+    $b.on('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        playVoicePreview(getId(), this);
+    });
+    return $b;
+}
+
+/** The one 🎧 sample row under "목소리 목록 불러오기": pick any voice and hear its sample. */
+function addDefaultPreviewButtons() {
+    const $sel = $('#voice_cast_preview_voice');
+    if (!$sel.length || $sel.next('.vc_voice_prev').length) return;
+    $sel.after(previewButton(() => String($sel.val() ?? '')));
+    $sel.on('change', () => {
+        // picking another voice while one plays → play the new one right away
+        if (previewBtn) playVoicePreview(String($sel.val() ?? ''), $sel.next('.vc_voice_prev')[0]);
+    });
+}
+
 function renderVoiceSelects() {
     const s = getSettings();
     $('#voice_cast_male_voice').html(voiceOptionsHtml(s.maleVoiceId));
     $('#voice_cast_female_voice').html(voiceOptionsHtml(s.femaleVoiceId));
     $('#voice_cast_unknown_voice').html(voiceOptionsHtml(s.unknownVoiceId));
     $('#voice_cast_sfx_voice').html(voiceOptionsHtml(s.sfxVoiceId));
+    const keep = $('#voice_cast_preview_voice').val();
+    $('#voice_cast_preview_voice').html(voiceOptionsHtml(keep || '').replace('<option value="">(없음)</option>', '<option value="">목소리를 골라 샘플 듣기</option>'));
     renderCastList();
 }
 
@@ -3068,6 +3129,10 @@ function settingsHtml() {
                 <div class="vc_section_title">🗣️ 기본 목소리</div>
                 <div class="vc_row">
                     <div id="voice_cast_load_voices" class="menu_button menu_button_icon"><i class="fa-solid fa-rotate"></i><span>목소리 목록 불러오기</span></div>
+                </div>
+                <div class="vc_voice_pick" title="일레븐랩스 샘플이라 크레딧이 안 들어요">
+                    <span>🎧</span>
+                    <select id="voice_cast_preview_voice" class="text_pole"></select>
                 </div>
                 <label for="voice_cast_male_voice">남자</label>
                 <select id="voice_cast_male_voice" class="text_pole"></select>
@@ -3678,6 +3743,7 @@ jQuery(async () => {
     $('#extensions_settings2').append(settingsHtml());
     bindSettingsUI();
     renderVoiceSelects();
+    addDefaultPreviewButtons();
 
     injectButtons();
     applyQuickButtons();
