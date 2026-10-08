@@ -587,3 +587,20 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 #voice_cast_settings .vc_group_body {
     padding: 0 10px 8px;
 }
+
+#voice_cast_settings .vc_conn_status {
+    font-size: 0.85em;
+    margin: 2px 0 6px;
+}
+
+#voice_cast_settings .vc_conn_status:empty {
+    display: none;
+}
+
+#voice_cast_settings .vc_conn_status[data-state="ok"] {
+    color: #6fcf86;
+}
+
+#voice_cast_settings .vc_conn_status[data-state="error"] {
+    color: #ef7a7a;
+}

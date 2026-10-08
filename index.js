@@ -2621,12 +2621,32 @@ async function loadVoices(showToast = false) {
         renderVoiceSelects();
         if (showToast) {
             const st = e?.status;
-            const why = st === 400 ? '실리태번에 ElevenLabs 키가 저장돼 있지 않아요. 🔑 버튼으로 키를 다시 넣어주세요.'
-                : st === 404 ? '이 실리태번 버전에는 필요한 기능이 없어요. 실리태번을 최신 버전으로 업데이트해 주세요.'
-                : st === 500 ? '일레븐랩스가 요청을 거절했거나 연결이 안 됐어요. 키가 맞는지(권한: Voices 읽기 포함), 인터넷 연결을 확인하고 실리태번 서버 화면(콘솔)의 ElevenLabs 메시지를 봐주세요.'
-                : '실리태번 서버와 연결이 안 됐어요.';
-            toastr.error(`목소리 목록을 못 불러왔어요 (${st ? `HTTP ${st}` : '연결 오류'}). ${why}`, 'MultiCast TTS', { timeOut: 12000 });
+            toastr.error(`목소리 목록을 못 불러왔어요 (${st ? `HTTP ${st}` : '연결 오류'}). ${connectionErrorText(e)}`, 'MultiCast TTS', { timeOut: 12000 });
         }
+        throw e;
+    }
+}
+
+function connectionErrorText(e) {
+    const st = e?.status;
+    return st === 400 ? '실리태번에 ElevenLabs 키가 저장돼 있지 않아요. 🔑 버튼으로 키를 다시 넣어주세요.'
+        : st === 404 ? '이 실리태번 버전에는 필요한 기능이 없어요. 실리태번 1.15.0 이상으로 업데이트해 주세요.'
+        : st === 500 ? '일레븐랩스가 요청을 거절했거나 연결이 안 됐어요. 키가 맞는지(sk_로 시작, 권한: Text to Speech + Voices 읽기), 인터넷 연결을 확인해 주세요. 자세한 이유는 실리태번 서버 화면(콘솔)에 나와요.'
+        : '실리태번 서버와 연결이 안 됐어요.';
+}
+
+/** 🔌 연결 확인: is the key saved, accepted by ElevenLabs, and are voices readable? (no credits used) */
+async function checkConnection() {
+    const $out = $('#voice_cast_conn_status');
+    $out.attr('data-state', 'busy').text('확인 중…');
+    try {
+        await loadVoices(false);
+        const own = voiceList.filter(v => !['premade'].includes(v.category)).length;
+        $out.attr('data-state', 'ok').text(`✅ 연결됐어요 · 목소리 ${voiceList.length}개 (내 목소리 ${own}개) · 모델 ${modelInfo(getSettings().model).label}`);
+        toastr.success('일레븐랩스 연결 OK!', 'MultiCast TTS', { timeOut: 2000 });
+    } catch (e) {
+        const st = e?.status;
+        $out.attr('data-state', 'error').text(`❌ 연결 실패 (${st ? `HTTP ${st}` : '연결 오류'}) · ${connectionErrorText(e)}`);
     }
 }
 
@@ -2799,7 +2819,7 @@ const EDITOR_RECLASSIFY = 1002; // POPUP_RESULT.CUSTOM2
 async function openScriptEditor(messageId) {
     const ctx = SillyTavern.getContext();
     if (!ctx.chat[messageId]) return;
-    if (!voiceList.length) await loadVoices(false);
+    if (!voiceList.length) await loadVoices(false).catch(() => {});
 
     let script;
     try {
@@ -3021,6 +3041,10 @@ function settingsHtml() {
                         <i class="fa-solid fa-key"></i><span>ElevenLabs API 키 설정</span>
                     </div>
                 </div>
+                <div class="vc_row">
+                    <div id="voice_cast_check" class="menu_button menu_button_icon" title="키가 저장돼 있고 일레븐랩스가 받아주는지 확인해요 (크레딧 안 씀)"><i class="fa-solid fa-plug-circle-check"></i><span>연결 확인</span></div>
+                </div>
+                <div id="voice_cast_conn_status" class="vc_conn_status"></div>
                 <div class="vc_hint">키는 실리태번 서버의 비밀 저장소에 저장돼요. 기본 TTS 확장은 꺼둬도 괜찮아요.</div>
                 <div class="vc_row">
                     <a class="menu_button menu_button_icon" href="${ELEVENLABS_HISTORY_URL}" target="_blank" rel="noopener noreferrer" title="일레븐랩스 생성 기록(History)을 새 탭에서 열어요">
@@ -3412,7 +3436,8 @@ function bindSettingsUI() {
     $('#voice_cast_unknown_voice').on('change', function () { s.unknownVoiceId = String($(this).val()); save(); });
     $('#voice_cast_sfx_voice').on('change', function () { s.sfxVoiceId = String($(this).val()); save(); });
     $('#voice_cast_sfx').prop('checked', !!s.sfxEnabled).on('change', function () { setSfx($(this).prop('checked')); });
-    $('#voice_cast_load_voices').on('click', () => loadVoices(true));
+    $('#voice_cast_load_voices').on('click', () => loadVoices(true).catch(() => {}));
+    $('#voice_cast_check').on('click', checkConnection);
 
     // Cast list (delegated)
     // Cast lists (bot + shared), delegated
@@ -3684,13 +3709,13 @@ jQuery(async () => {
     }
     eventSource.on(event_types.MORE_MESSAGES_LOADED, injectButtons);
     eventSource.on(event_types.MESSAGE_SWIPED, (id) => { if (playingMessageId === Number(id)) stopPlayback(); });
-    eventSource.on(event_types.APP_READY, () => { loadVoices(false); addWandItem(); });
+    eventSource.on(event_types.APP_READY, () => { loadVoices(false).catch(() => {}); addWandItem(); });
     addWandItem();
     // Reload voices when the ElevenLabs key is set/changed from the key button
     for (const ev of [event_types.SECRET_WRITTEN, event_types.SECRET_ROTATED, event_types.SECRET_DELETED]) {
         if (!ev) continue;
         eventSource.on(ev, (key) => {
-            if (key === 'api_key_elevenlabs') loadVoices(ev === event_types.SECRET_WRITTEN);
+            if (key === 'api_key_elevenlabs') loadVoices(ev === event_types.SECRET_WRITTEN).catch(() => {});
         });
     }
 
