@@ -3650,7 +3650,7 @@ function settingsHtml() {
     <div id="voice_cast_settings" class="extension_settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b><svg xmlns="http://www.w3.org/2000/svg" class="vc_title_icon" aria-hidden="true" focusable="false" viewBox="0 0 64 64"><path d="M12 38V29C12 17.95 20.95 9 32 9s20 8.95 20 20v9" fill="none" stroke="#F52D56" stroke-width="6" stroke-linecap="round"/><path d="M32 11C32 3 39 1 46 3c-2 7-7 10-14 8Z" fill="#26B576"/><rect x="6" y="32" width="17" height="23" rx="8.5" fill="#F52D56"/><rect x="41" y="32" width="17" height="23" rx="8.5" fill="#F52D56"/></svg> MultiCast TTS</b>
+                <b><svg xmlns="http://www.w3.org/2000/svg" class="vc_title_icon" aria-hidden="true" focusable="false" viewBox="3 0 58 58"><path d="M12 38V29C12 17.95 20.95 9 32 9s20 8.95 20 20v9" fill="none" stroke="#F52D56" stroke-width="6" stroke-linecap="round"/><path d="M32 11C32 3 39 1 46 3c-2 7-7 10-14 8Z" fill="#26B576"/><rect x="6" y="32" width="17" height="23" rx="8.5" fill="#F52D56"/><rect x="41" y="32" width="17" height="23" rx="8.5" fill="#F52D56"/></svg> MultiCast TTS</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">

@@ -679,10 +679,10 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 /* Cherry-pink headphones with a little leaf in the panel title. */
 #voice_cast_settings .vc_title_icon {
     display: inline-block;
-    width: 1.45em;
-    height: 1.45em;
-    margin-right: 4px;
-    vertical-align: -0.44em;
+    width: 1.2em;
+    height: 1.2em;
+    margin-right: 2px;
+    vertical-align: -0.22em;
     overflow: visible;
 }
 
