@@ -640,3 +640,38 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
     flex: 1 1 auto;
     min-width: 0;
 }
+
+/* 특정 캐릭터만 듣기 */
+#voice_cast_settings .vc_listen_list {
+    margin: 2px 0 8px 22px;
+    padding: 4px 8px;
+    border-left: 2px solid rgba(128, 128, 128, 0.35);
+}
+
+#voice_cast_settings .vc_listen_others {
+    opacity: 0.8;
+    font-size: 0.92em;
+}
+
+/* ---- tidy checkbox rows ---- */
+#voice_cast_settings .checkbox_label {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 8px 0 2px;
+    line-height: 1.4;
+}
+
+#voice_cast_settings .checkbox_label > input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin: 2px 0 0;
+}
+
+#voice_cast_settings .vc_hint.vc_sub {
+    margin: 0 0 6px 28px;
+    font-size: 0.8em;
+}
+
+#voice_cast_settings .vc_listen_list .checkbox_label {
+    margin: 4px 0;
+}

@@ -40,6 +40,7 @@ const defaultSettings = Object.freeze({
     continuePlay: false,     // after a message, go on to the next one
     continueMode: 'saved',
     stepMode: false,
+    listenOnly: {},          // per bot: { on: bool, keys: [...], known: [...], others: bool } — 특정 캐릭터만 듣기
     rate: 1,                 // playback speed (no credits — applies to saved audio too)
     openGroups: ['start', 'cast'],         // one line per ⏭ press (waits after each line)   // 'saved' (only messages that already have audio — no credits) | 'all'
     emotionLevel: 'natural', // 'subtle' | 'natural' | 'strong' — how big the delivery tags may get
@@ -1333,6 +1334,103 @@ function highlightLine(messageId, text, line = null, from = 0) {
     return null;
 }
 
+// --- 특정 캐릭터만 듣기 (per bot) ---
+
+function listenState(create = false) {
+    const bot = currentBot();
+    if (!bot) return null;
+    const s = getSettings();
+    s.listenOnly ??= {};
+    if (!s.listenOnly[bot.key] && create) s.listenOnly[bot.key] = { on: false, keys: [], known: [], others: true };
+    return s.listenOnly[bot.key] ?? null;
+}
+
+/** One key per character: '__user__' for the user's character, the cast row's first name, or the speaker name. */
+function speakerKey(speaker) {
+    const n = normName(speaker);
+    if (!n) return '';
+    if (userCharacterNames().has(n)) return '__user__';
+    const entry = findCastEntry(speaker);
+    if (entry) {
+        const first = String(entry.names ?? '').split(',')[0]?.trim();
+        if (first && first.toLowerCase() !== '{{user}}') return normName(first);
+    }
+    return n;
+}
+
+/** Everyone who could be picked: me, this bot's cast, the shared cast, and speakers found in this chat. */
+function listenCandidates() {
+    const ctx = SillyTavern.getContext();
+    const out = new Map(); // key → label
+    out.set('__user__', `나 (${userNameFor((ctx.chat?.length ?? 1) - 1) || '내 캐릭터'})`);
+    for (const e of allCastEntries()) {
+        const first = String(e.names ?? '').split(',')[0]?.trim();
+        if (!first || first.toLowerCase() === '{{user}}') continue;
+        const k = speakerKey(first);
+        if (k && !out.has(k)) out.set(k, first);
+    }
+    for (const m of ctx.chat ?? []) {
+        const variants = m?.extra?.[MODULE_NAME]?.variants ?? {};
+        for (const entry of Object.values(variants)) {
+            for (const line of entry?.script ?? []) {
+                if (!line?.speaker || line.type === 'sfx') continue;
+                const k = speakerKey(line.speaker);
+                if (k && !out.has(k)) out.set(k, line.speaker);
+            }
+        }
+    }
+    return out;
+}
+
+/** Should this line be voiced under 특정 캐릭터만 듣기? */
+function listenAllows(line) {
+    if (line?.type === 'sfx') return true;
+    const st = listenState();
+    if (!st?.on) return true;
+    const k = speakerKey(line?.speaker);
+    if (st.keys.includes(k)) return true;
+    if (st.known.includes(k)) return false;
+    return !!st.others; // someone new (side characters etc.)
+}
+
+function renderListenList() {
+    const $box = $('#voice_cast_listen_list');
+    if (!$box.length) return;
+    const st = listenState();
+    $('#voice_cast_listen_on').prop('checked', !!st?.on);
+    if (!currentBot()) {
+        $('#voice_cast_listen_on').prop('disabled', true);
+        $box.hide();
+        return;
+    }
+    $('#voice_cast_listen_on').prop('disabled', false);
+    if (!st?.on) { $box.hide().empty(); return; }
+    const cands = listenCandidates();
+    // anyone newly found since last time starts checked
+    for (const k of cands.keys()) {
+        if (!st.known.includes(k)) { st.known.push(k); st.keys.push(k); }
+    }
+    $box.empty().show();
+    for (const [k, label] of cands) {
+        const $l = $(`<label class="checkbox_label"><input type="checkbox" /><span></span></label>`);
+        $l.find('span').text(label);
+        $l.find('input').prop('checked', st.keys.includes(k)).on('change', function () {
+            st.keys = st.keys.filter(x => x !== k);
+            if (this.checked) st.keys.push(k);
+            save();
+            refreshLineButtons({ rebuild: true });
+        });
+        $box.append($l);
+    }
+    const $o = $(`<label class="checkbox_label vc_listen_others"><input type="checkbox" /><span>그 외 새로 나오는 사람 (모브·단역)</span></label>`);
+    $o.find('input').prop('checked', !!st.others).on('change', function () {
+        st.others = this.checked;
+        save();
+        refreshLineButtons({ rebuild: true });
+    });
+    $box.append($o);
+}
+
 let paused = false;
 let nowPlaying = null; // { messageId, line, index, total } — what the bottom player shows
 
@@ -1425,7 +1523,8 @@ function playUrl(url, mySession, line = null) {
         const master = Number(getSettings().volume);
         const vol = (Number.isNaN(master) ? 1 : Math.max(0, master)) * castVolumeFor(line);
         audio.volume = Math.min(1, vol);
-        const rate = Number(getSettings().rate) || 1;
+        const own = Number(line ? findCastEntry(line.speaker)?.rate : NaN);
+        const rate = (Number(getSettings().rate) || 1) * (own > 0 ? own : 1);
         audio.playbackRate = Math.min(2, Math.max(0.5, rate));
         audio.preservesPitch = true;
         if (vol > 1) boostAudio(audio, vol);
@@ -1509,10 +1608,19 @@ function synthesizeAll(lines, isActive, onProgress = null) {
 }
 
 /** Script lines that will actually be voiced, with their voice and final TTS text. */
+/** Names the user's character goes by in this chat (selected persona + names on the user's messages). */
+function userCharacterNames() {
+    const ctx = SillyTavern.getContext();
+    const names = new Set([normName(ctx.name1), '{{user}}', 'user']);
+    for (const m of ctx.chat ?? []) if (m?.is_user && m.name) names.add(normName(m.name));
+    return names;
+}
+
 function buildPlayableLines(script, { keepThoughts = false } = {}) {
     const s = getSettings();
     return script
         .filter(l => keepThoughts || s.includeThoughts || l.type !== 'thought')
+        .filter(l => keepThoughts || listenAllows(l))
         .filter(l => l.type !== 'sfx' || keepThoughts || sfxPlayable())
         .map(l => ({ src: l, voiceId: pickVoice(l), ttsText: buildTtsText(l) }))
         .filter(l => l.voiceId || l.src.audioKey);
@@ -2587,7 +2695,7 @@ function renderCastList() {
         }
         list.forEach((entry, i) => {
             const moveTitle = scope === 'bot' ? '공통 캐스트로 옮기기 (모든 봇에 적용)' : '이 봇 캐스트로 옮기기';
-            const hasCustom = ['stability', 'similarity', 'volume', 'temper', 'range', 'actingNote', 'alwaysTags', 'color'].some(k => (entry[k] ?? '') !== '');
+            const hasCustom = ['stability', 'similarity', 'volume', 'rate', 'temper', 'range', 'actingNote', 'alwaysTags', 'color'].some(k => (entry[k] ?? '') !== '');
             const $row = $(`
                 <div class="vc_cast_row" data-index="${i}" data-scope="${scope}">
                     <input type="text" class="text_pole vc_cast_names" placeholder="이름, 별명 (쉼표로 구분)" />
@@ -2598,7 +2706,7 @@ function renderCastList() {
                     </select>
                     <select class="text_pole vc_cast_voice">${voiceOptionsHtml(entry.voiceId)}</select>
                     <div class="vc_cast_btns">
-                        <div class="vc_cast_adv_toggle fa-solid fa-sliders ${hasCustom ? 'vc_custom' : ''}" title="이 캐릭터만 따로 설정 (성격 / 형광펜 / 음량 / Stability / Similarity)"></div>
+                        <div class="vc_cast_adv_toggle fa-solid fa-sliders ${hasCustom ? 'vc_custom' : ''}" title="이 캐릭터만 따로 설정 (성격 / 형광펜 / 음량 / 속도 / Stability / Similarity)"></div>
                         ${scope === 'global' && !bot ? '' : `<div class="vc_cast_move fa-solid ${scope === 'bot' ? 'fa-globe' : 'fa-user-tag'}" title="${moveTitle}"></div>`}
                         <div class="vc_cast_delete fa-solid fa-trash-can" title="삭제"></div>
                     </div>
@@ -2627,6 +2735,8 @@ function renderCastList() {
                         </div>
                         <label>음량: <span class="vc_cast_vol_val"></span></label>
                         <input type="range" class="vc_cast_vol" min="0" max="2" step="0.05" />
+                        <label>속도: <span class="vc_cast_rate_val"></span></label>
+                        <input type="range" class="vc_cast_rate" min="0.7" max="1.5" step="0.05" />
                         <label>Stability: <span class="vc_cast_stab_val"></span></label>
                         <input type="range" class="vc_cast_stab" min="0" max="1" step="0.05" />
                         <label>Similarity: <span class="vc_cast_sim_val"></span></label>
@@ -2654,6 +2764,9 @@ function renderCastList() {
             const vol = entry.volume ?? null;
             $row.find('.vc_cast_vol').val(vol ?? 1);
             $row.find('.vc_cast_vol_val').text(vol === null ? '100%' : `${Math.round(vol * 100)}%`);
+            const crate = entry.rate ?? null;
+            $row.find('.vc_cast_rate').val(crate ?? 1);
+            $row.find('.vc_cast_rate_val').text(crate === null ? '기본 (1배)' : `${Number(crate).toFixed(2).replace(/0$/, '')}배`);
             if (openAdv.has(`${scope}:${i}`)) $row.find('.vc_cast_adv').show();
             $row.find('.vc_cast_names').val(entry.names ?? '');
             $row.find('.vc_cast_gender').val(entry.gender ?? 'u');
@@ -3172,7 +3285,8 @@ function settingsHtml() {
                     </select>
                 </div>
                 <div class="vc_hint">켜면 새 답변이 와도 자동 재생·편집창 없이 대사 앞에 ▶만 생겨요. 읽다가 듣고 싶은 대사만 눌러요. 🔊는 처음엔 '준비', 준비된 뒤 누르면 전체 재생이에요.</div>
-                <label class="checkbox_label" title="새 답변이 오면 분류와 음성 생성을 미리 해둬요. 🔊를 누르면 바로 나와요. 안 들을 메시지에도 크레딧이 쓰여요. (자동 재생이 켜져 있으면 그쪽이 우선)"><input id="voice_cast_pregen" type="checkbox" /><span>새 답변 음성 미리 만들어두기 (재생은 안 함 · 크레딧 사용)</span></label>
+                <label class="checkbox_label" title="새 답변이 오면 분류와 음성 생성을 미리 해둬요. 🔊를 누르면 바로 나와요. 안 들을 메시지에도 크레딧이 쓰여요. (자동 재생이 켜져 있으면 그쪽이 우선)"><input id="voice_cast_pregen" type="checkbox" /><span>새 답변 음성 미리 만들어두기</span></label>
+                <div class="vc_hint vc_sub">재생은 안 하고 만들어만 둬요 · 크레딧 사용</div>
                 <div class="vc_row">
                     <label for="voice_cast_pacing">🌬️ 호흡 (대사 사이 쉼)</label>
                     <select id="voice_cast_pacing" class="text_pole" style="width:auto">
@@ -3182,8 +3296,8 @@ function settingsHtml() {
                     </select>
                 </div>
                 <div class="vc_hint">말하는 사람이 바뀌거나 사이에 지문이 길면 그만큼 더 쉬어요 (지문 읽는 시간만큼).</div>
-                <label class="checkbox_label"><input id="voice_cast_continue" type="checkbox" /><span>이어 듣기 (메시지가 끝나면 다음 메시지로 자동으로 넘어가기)</span></label>
-                <label class="checkbox_label"><input id="voice_cast_step" type="checkbox" /><span>한 줄씩 듣기 (대사 하나 끝날 때마다 멈추고 ⏭를 기다려요 · 플레이어의 '1' 버튼과 같아요)</span></label>
+                <label class="checkbox_label"><input id="voice_cast_continue" type="checkbox" /><span>이어 듣기</span></label>
+                <div class="vc_hint vc_sub">메시지가 끝나면 다음 메시지로 자동으로 넘어가요</div>
                 <div class="vc_row">
                     <label for="voice_cast_continue_mode">이어 들을 메시지</label>
                     <select id="voice_cast_continue_mode" class="text_pole" style="width:auto">
@@ -3192,6 +3306,11 @@ function settingsHtml() {
                     </select>
                 </div>
                 <div class="vc_hint">⏮ ⏭는 메시지 끝에서 누르면 이전/다음 메시지로 넘어가요. 이미 만든 음성이 있는 메시지로만 넘어가서 크레딧을 안 써요 (깡통 · 유저 메시지 모두).</div>
+                <label class="checkbox_label"><input id="voice_cast_step" type="checkbox" /><span>한 줄씩 듣기</span></label>
+                <div class="vc_hint vc_sub">대사 하나 끝날 때마다 멈추고 ⏭를 기다려요 · 플레이어 '1' 버튼과 같아요</div>
+                <label class="checkbox_label"><input id="voice_cast_listen_on" type="checkbox" /><span>🎯 특정 캐릭터만 듣기</span></label>
+                <div class="vc_hint vc_sub">이 깡통에서만 · 체크 안 한 캐릭터는 건너뛰고 크레딧도 안 써요</div>
+                <div id="voice_cast_listen_list" class="vc_listen_list" style="display:none"></div>
                 <label>볼륨: <span id="voice_cast_volume_val"></span></label>
                 <input id="voice_cast_volume" type="range" min="0" max="1" step="0.05" />
                 <label>재생 속도: <span id="voice_cast_rate_val"></span></label>
@@ -3209,9 +3328,11 @@ function settingsHtml() {
                 <details class="vc_group" data-group="view">
                     <summary class="vc_group_title">🎨 화면</summary>
                     <div class="vc_group_body">
-                <label class="checkbox_label" title="입력창 위에 작은 손잡이가 생겨요. 위로 밀거나 누르면 플레이어가 올라와요."><input id="voice_cast_player" type="checkbox" /><span>🎧 하단 플레이어 (손잡이를 위로 밀거나 눌러서 열기)</span></label>
+                <label class="checkbox_label" title="입력창 위에 작은 손잡이가 생겨요. 위로 밀거나 누르면 플레이어가 올라와요."><input id="voice_cast_player" type="checkbox" /><span>🎧 하단 플레이어</span></label>
+                <div class="vc_hint vc_sub">입력창 위 짧은 선을 위로 밀거나 눌러서 열어요</div>
                 <label class="checkbox_label" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
-                <label class="checkbox_label" title="이미 만든 음성이 있는 대사 앞에 작은 ▶가 생겨요. 누르면 그 대사만 다시 들어요 (크레딧 안 씀)."><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기 (만든 음성만)</span></label>
+                <label class="checkbox_label" title="이미 만든 음성이 있는 대사 앞에 작은 ▶가 생겨요. 누르면 그 대사만 다시 들어요 (크레딧 안 씀)."><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기</span></label>
+                <div class="vc_hint vc_sub">이미 만든 음성이 있는 대사에만 생겨요</div>
                 <label class="checkbox_label"><input id="voice_cast_highlight" type="checkbox" /><span>읽는 대사 채팅에 형광펜 표시</span></label>
                     </div>
                 </details>
@@ -3264,7 +3385,8 @@ function settingsHtml() {
                 <div class="vc_hint">감정 폭을 따로 안 정한 캐릭터의 기본값이에요 (은은하게 2 · 자연스럽게 3 · 과감하게 5). 캐릭터마다 성격·감정 폭은 캐스트 줄의 🎚에서 정해요. 새로 분류하는 대사부터 적용돼요.</div>
                 <label for="voice_cast_extra">추가 지시 (선택, 영어 권장)</label>
                 <textarea id="voice_cast_extra" class="text_pole" rows="2" placeholder="e.g. Lines in 「」 are phone calls."></textarea>
-                <label class="checkbox_label"><input id="voice_cast_use_tags" type="checkbox" /><span>감정 태그로 연기시키기 [angry] 등 (v3/v4만)</span></label>
+                <label class="checkbox_label"><input id="voice_cast_use_tags" type="checkbox" /><span>감정 태그로 연기시키기</span></label>
+                <div class="vc_hint vc_sub">[angry] 같은 태그 · v3/v4 전용</div>
                 <div class="vc_row">
                     <label for="voice_cast_thought_tag">속마음에 붙일 태그</label>
                     <input id="voice_cast_thought_tag" type="text" class="text_pole" style="width:120px" placeholder="whispering" />
@@ -3278,7 +3400,8 @@ function settingsHtml() {
                 <details class="vc_group" data-group="sfx">
                     <summary class="vc_group_title">🔔 효과음 <span class="vc_beta">BETA</span></summary>
                     <div class="vc_group_body">
-                <label class="checkbox_label"><input id="voice_cast_sfx" type="checkbox" /><span>효과음 넣기 (지문의 문 쾅, 총소리 같은 소리를 따로 한 줄로)</span></label>
+                <label class="checkbox_label"><input id="voice_cast_sfx" type="checkbox" /><span>효과음 넣기</span></label>
+                <div class="vc_hint vc_sub">지문의 문 쾅, 발소리 같은 소리를 대본에 따로 한 줄로 넣어요</div>
                 <div class="vc_hint">Eleven v3 / v4 / v4 Turbo처럼 [태그]를 아는 모델에서만 나와요. 효과음은 대사와 섞지 않고 대본에 🔔 효과음 줄로 따로 들어가서, 편집기에서 고치거나 지울 수 있어요. 켠 뒤 새로 분류하는 메시지부터 들어가요. 품질은 아직 들쭉날쭉해요.</div>
                 <label for="voice_cast_sfx_voice">효과음에 쓸 목소리 (비우면 '성별 모름' 목소리)</label>
                 <select id="voice_cast_sfx_voice" class="text_pole"></select>
@@ -3418,6 +3541,15 @@ function bindSettingsUI() {
     });
     bindCheck('#voice_cast_continue', 'continuePlay');
     bindCheck('#voice_cast_step', 'stepMode');
+    $('#voice_cast_listen_on').on('change', function () {
+        const st = listenState(true);
+        if (!st) return;
+        st.on = !!this.checked;
+        save();
+        renderListenList();
+        refreshLineButtons({ rebuild: true });
+    });
+    renderListenList();
     $('#voice_cast_step').on('change', updatePlayer);
     $('#voice_cast_continue_mode').val(s.continueMode).on('change', function () {
         s.continueMode = String($(this).val());
@@ -3472,7 +3604,7 @@ function bindSettingsUI() {
         $('#voice_cast_cache_stats').text(`저장된 음성 ${count}개 · ${mb.toFixed(1)}MB`);
     };
     refreshCacheStats();
-    $('#voice_cast_settings .inline-drawer-toggle').on('click', refreshCacheStats);
+    $('#voice_cast_settings .inline-drawer-toggle').on('click', () => { refreshCacheStats(); renderListenList(); });
     $('#voice_cast_cache_clear').on('click', async () => {
         const ok = await ctx.Popup.show.confirm('MultiCast TTS', '저장된 음성을 전부 지울까요? 다시 들으면 새로 생성돼요(크레딧 사용).');
         if (!ok) return;
@@ -3593,6 +3725,16 @@ function bindSettingsUI() {
             save();
             renderCastList();
         })
+        .on('input', '.vc_cast_rate', function () {
+            const { list, i } = rowRef(this);
+            if (!list?.[i]) return;
+            const v = Number($(this).val());
+            list[i].rate = v;
+            const $row = $(this).closest('.vc_cast_row');
+            $row.find('.vc_cast_rate_val').text(`${v.toFixed(2).replace(/0$/, '')}배`);
+            $row.find('.vc_cast_adv_toggle').addClass('vc_custom');
+            save();
+        })
         .on('input', '.vc_cast_vol', function () {
             const { list, i } = rowRef(this);
             if (!list?.[i]) return;
@@ -3620,6 +3762,7 @@ function bindSettingsUI() {
             delete list[i].stability;
             delete list[i].similarity;
             delete list[i].volume;
+            delete list[i].rate;
             delete list[i].temper;
             delete list[i].range;
             delete list[i].actingNote;
@@ -3772,7 +3915,7 @@ jQuery(async () => {
         ensureBotCast();
         renderCastList();
         // the bot's linked persona can be applied right after this event
-        setTimeout(() => { ensureBotCast(); renderCastList(); }, 800);
+        setTimeout(() => { ensureBotCast(); renderCastList(); renderListenList(); }, 800);
     });
     if (event_types.PERSONA_CHANGED) {
         eventSource.on(event_types.PERSONA_CHANGED, () => { ensureBotCast(); renderCastList(); });
