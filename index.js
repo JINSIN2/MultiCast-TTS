@@ -2173,6 +2173,9 @@ function placePlayer() {
     const el = document.getElementById('vc_player');
     const form = document.getElementById('send_form');
     if (el && form && el.nextElementSibling !== form) form.parentElement?.insertBefore(el, form);
+    // the player floats above the input bar, so its container must be the positioning box
+    const box = el?.parentElement;
+    if (box && box !== document.body && getComputedStyle(box).position === 'static') box.style.position = 'relative';
 }
 
 function setPlayerOpen(open) {
@@ -2205,6 +2208,7 @@ function buildPlayer() {
     const form = document.getElementById('send_form');
     if (form?.parentElement) form.parentElement.insertBefore($p[0], form);
     else $('body').append($p);
+    placePlayer();
 
     $p.on('click', '.vc_player_handle', () => setPlayerOpen(!playerOpen));
     // pointerdown instead of click → reacts the moment the finger touches

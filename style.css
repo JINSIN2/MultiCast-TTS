@@ -366,11 +366,21 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 /* ---- Bottom mini player: a drawer docked right above the input bar ---- */
 .vc_player {
     --vc-c: hsl(36, 85%, 70%);
+    /* floats just above the input bar: no strip of its own, the chat stays visible around it */
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    z-index: 30;
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 100%;
+    pointer-events: none;
     font-family: inherit;
+}
+
+.vc_player > * {
+    pointer-events: auto;
 }
 
 /* closed: just a tiny grabber line (like a sheet handle) */
