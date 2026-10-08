@@ -36,6 +36,13 @@ const defaultSettings = Object.freeze({
     maxTokens: 4096,
     contextChars: 1500,
     extraInstructions: '',
+    pacing: 'off',           // 'off' | 'natural' | 'slow' — breathing room between lines
+    continuePlay: false,     // after a message, go on to the next one
+    continueMode: 'saved',
+    stepMode: false,
+    rate: 1,                 // playback speed (no credits — applies to saved audio too)
+    openGroups: ['start', 'cast'],         // one line per ⏭ press (waits after each line)   // 'saved' (only messages that already have audio — no credits) | 'all'
+    emotionLevel: 'natural', // 'subtle' | 'natural' | 'strong' — how big the delivery tags may get
 
     model: 'eleven_v4',
     stability: 0.5,
@@ -49,6 +56,9 @@ const defaultSettings = Object.freeze({
     maleVoiceId: '',
     femaleVoiceId: '',
     unknownVoiceId: '',
+    sfxEnabled: false,
+    player: false,           // bottom mini player (swipe up / tap the little handle)       // BETA: sound effects as their own script lines (needs a tag model)
+    sfxVoiceId: '',
     cast: [],        // shared cast (applies to every bot)
     castByBot: {},   // { 'char:<avatar>' | 'group:<id>': [entries] }
     castAutoSeen: {}, // { botKey: [names already auto-filled] }
@@ -146,6 +156,81 @@ function getMessageText(message) {
     if (s.voiceLang === 'display' && translated) return cleanMessageText(translated);
     return cleanMessageText(message?.mes ?? '');
 }
+
+/** Per-character temperament (cast row) → hint for the classifier's delivery tags. */
+const TEMPERS = {
+    calm: { label: '차분함', range: 2, hint: 'calm and composed; keeps emotions restrained, rarely raises their voice — even when upset, sounds firm or cold rather than shouting' },
+    hot: { label: '다혈질', range: 5, hint: 'hot-tempered and expressive; reacts strongly, raises their voice easily' },
+    cold: { label: '냉정·무뚝뚝', range: 1, hint: 'cool and blunt; flat, understated delivery with little visible emotion' },
+    gentle: { label: '다정함', range: 2, hint: 'gentle and warm; soft, kind delivery, rarely harsh' },
+    cheerful: { label: '밝음', range: 4, hint: 'cheerful and lively; upbeat, energetic delivery' },
+    shy: { label: '소심·수줍음', range: 2, hint: 'shy and timid; hesitant, quiet delivery, often nervous or flustered' },
+    playful: { label: '장난스러움', range: 3, hint: 'playful and teasing; light, mischievous delivery' },
+};
+
+/** 감정 폭 1~5: how far up the emotion ladders a character may go. */
+const RANGE_LABELS = { 1: '아주 절제', 2: '절제', 3: '보통', 4: '풍부', 5: '격정적' };
+const GLOBAL_RANGE = { subtle: 2, natural: 3, strong: 5 };
+
+const EMOTION_LADDERS = [
+    'Emotion ladders (step 1 → 5). Pick the tag from the step that fits the moment, but NEVER above the speaker\'s emotional range:',
+    '  anger:   calm/flat → firm → irritated → angry → furious/shouting',
+    '  sadness: wistful → subdued → sad → tearful → crying/sobbing',
+    '  joy:     warm → amused → cheerful → laughing → ecstatic',
+    '  fear:    uneasy → hesitant → nervous → scared → panicked/screaming',
+    '  surprise: curious → surprised → startled → shocked → gasping',
+    '  affection: soft → warm → tender → loving → passionate',
+    'Example: with range 2, even a furious moment is voiced as "firm" (anger step 2) — the voice rises only a little; with range 5 it can be "shouting".',
+    'Ordinary lines without a clear emotion keep an empty tag.',
+].join('\n');
+
+/** A character's emotional range: cast row setting → temperament default → global setting. */
+function rangeFor(entry) {
+    return rangeInfo(entry).range;
+}
+
+function rangeInfo(entry) {
+    const r = Number(entry?.range);
+    if (r >= 1 && r <= 5) return { range: r, own: true };
+    if (TEMPERS[entry?.temper]?.range) return { range: TEMPERS[entry.temper].range, own: true };
+    const level = getSettings().emotionLevel;
+    return { range: GLOBAL_RANGE[level] ?? 3, own: level !== 'natural' };
+}
+
+/** Emotion words from the ladders — only these get softened/strengthened. */
+const EMOTION_WORDS = new Set(['firm', 'irritated', 'angry', 'furious', 'shouting', 'stern', 'annoyed', 'wistful', 'subdued', 'sad', 'tearful',
+    'crying', 'sobbing', 'warm', 'amused', 'cheerful', 'laughing', 'ecstatic', 'excited', 'uneasy', 'hesitant', 'nervous', 'scared',
+    'panicked', 'screaming', 'surprised', 'startled', 'shocked', 'tender', 'loving', 'passionate', 'frustrated', 'upset', 'cold', 'bitter']);
+
+/**
+ * The tag alone makes v3/v4 act it out fully — so a restrained character's tag is softened in words
+ * ("slightly irritated"), and the voice is made steadier (higher stability).
+ */
+function shapeTag(tag, line) {
+    const t = String(tag ?? '').trim();
+    if (!t || line?.type === 'sfx') return t;
+    const entry = findCastEntry(line?.speaker);
+    const { range, own } = rangeInfo(entry);
+    if (!own || !EMOTION_WORDS.has(t.toLowerCase())) return t;
+    if (range <= 1) return `faintly ${t}, holding it back`;
+    if (range === 2) return `slightly ${t}, restrained`;
+    if (range >= 5) return `very ${t}`;
+    return t;
+}
+
+/** Stability offset from the emotional range (only when the character/global setting asks for it). */
+function rangeStability(entry, base) {
+    const { range, own } = rangeInfo(entry);
+    if (!own) return base;
+    const map = { 1: 0.95, 2: 0.8, 3: base, 4: Math.max(0, base - 0.15), 5: Math.max(0, base - 0.3) };
+    return range === 1 || range === 2 ? Math.max(base, map[range]) : map[range];
+}
+
+const EMOTION_RULES = {
+    subtle: '- Keep the acting SUBTLE. Prefer mild, understated tags (e.g. irritated, firm, wistful, amused, soft, hesitant, warm, serious) and leave "tag" empty for ordinary lines. Use intense tags (shouting, furious, sobbing, screaming) ONLY when the text explicitly shows it (e.g. "she yelled", ALL CAPS, multiple exclamation marks).',
+    natural: '- Match the intensity actually written in the text — do not exaggerate. When unsure between two tags, pick the milder one (e.g. irritated instead of angry, firm instead of stern, amused instead of laughing). Ordinary lines can have an empty tag.',
+    strong: '- Act it out expressively: choose vivid, emotional tags that make the delivery dramatic.',
+};
 
 const VOICE_LANG_LABELS = { display: '화면에 보이는 대로', original: '원문 그대로', translate: 'AI 번역' };
 
@@ -261,10 +346,28 @@ function ensureBotCast() {
 // Classifier (separate LLM call)
 // ---------------------------------------------------------------------------
 
-function buildClassifierPrompt(text, prevText) {
+/**
+ * The user's character in this part of the chat: the name on the user's own messages
+ * (the selected persona can differ from the one the chat was written with).
+ */
+function userNameFor(messageId) {
+    const ctx = SillyTavern.getContext();
+    const chat = ctx.chat ?? [];
+    if (Number.isInteger(messageId)) {
+        for (let j = Math.min(messageId, chat.length - 1); j >= 0; j--) {
+            if (chat[j]?.is_user && chat[j].name) return chat[j].name;
+        }
+        for (let j = messageId + 1; j < chat.length; j++) {
+            if (chat[j]?.is_user && chat[j].name) return chat[j].name;
+        }
+    }
+    return ctx.name1 || 'User';
+}
+
+function buildClassifierPrompt(text, prevText, userNameOverride = null) {
     const s = getSettings();
     const ctx = SillyTavern.getContext();
-    const userName = ctx.name1 || 'User';
+    const userName = userNameOverride || ctx.name1 || 'User';
     const charName = ctx.name2 || '';
 
     const known = [];
@@ -282,7 +385,10 @@ function buildClassifierPrompt(text, prevText) {
             .map(n => (n.toLowerCase() === '{{user}}' ? userName : n));
         if (!names.length) continue;
         const g = entry.gender === 'm' ? 'male' : entry.gender === 'f' ? 'female' : 'unknown gender';
-        known.push(`- ${names[0]}${names.length > 1 ? ` (aliases: ${names.slice(1).join(', ')})` : ''} — ${g}`);
+        const extra = [`emotional range: ${rangeFor(entry)}/5`];
+        if (TEMPERS[entry.temper]) extra.push(`temperament: ${TEMPERS[entry.temper].hint}`);
+        if (String(entry.actingNote ?? '').trim()) extra.push(`acting note: ${String(entry.actingNote).trim()}`);
+        known.push(`- ${names[0]}${names.length > 1 ? ` (aliases: ${names.slice(1).join(', ')})` : ''} — ${g}${extra.length ? `; ${extra.join('; ')}` : ''}`);
     }
 
     const translating = s.voiceLang === 'translate';
@@ -304,7 +410,14 @@ function buildClassifierPrompt(text, prevText) {
             : '- "text": copy the line EXACTLY as written, in its original language, without the surrounding quotes or asterisks. Never translate, summarize, censor, or add words. Remove any narration that interrupts a line.',
         `- "speaker": who says/thinks it. Use the exact name from the known characters list when it matches. The user's character is "${userName}" — in impersonation-style messages the user's character may also speak. Unnamed side characters get a short descriptive English label (e.g. "waiter", "old man"). Use "unknown" only if truly impossible to tell.`,
         '- "gender": "m", "f", or "u". Infer from names, pronouns, honorifics, and context. Use the gender given in the known characters list when available.',
-        '- "tag": ONE short English delivery tag for voice acting, describing HOW the line is said: e.g. angry, sad, laughing, whispering, shouting, sighing, excited, nervous, sarcastic, crying, cold, flustered, playful, tired, pleading. Use "" for neutral delivery.',
+        '- "tag": ONE short English delivery tag for voice acting, describing HOW the line is said: e.g. soft, warm, calm, firm, serious, irritated, amused, teasing, hesitant, nervous, sad, wistful, tired, sarcastic, cold, flustered, excited, laughing, sighing, whispering, angry, shouting, crying, pleading. Use "" for neutral delivery.',
+        '- Match the intensity actually written in the text — do not exaggerate. When unsure between two steps, pick the lower one.',
+        `- Every speaker has an emotional range from 1 (very restrained) to 5 (very expressive). Characters in the known list show theirs; anyone else uses ${GLOBAL_RANGE[s.emotionLevel] ?? 3}/5.`,
+        EMOTION_LADDERS,
+        ...(s.sfxEnabled ? [
+            '- Sound effects: when the NARRATION clearly describes a distinct, audible sound (e.g. a door creaking or slamming, footsteps, thunder rumbling, clapping, a dog barking, glass shattering, a loud knock, a gunshot), add a SEPARATE entry at the point where it happens: {"speaker":"SFX","gender":"u","type":"sfx","tag":"","text":"[door creaking]"}. "text" is ONE short English sound tag in square brackets. At most 3 per message. Skip quiet or vague sounds, and never put sound tags inside dialogue lines.',
+        ] : []),
+        '- Also follow each character\'s temperament and acting note (a calm character stays composed; a hot-tempered one reacts sooner and stronger, within their range).',
         '- Output ONLY a valid JSON array. No prose, no markdown, no code fences. Escape any double quote inside a string as \\". If there is nothing to extract, output [].',
         '',
         'Format:',
@@ -418,22 +531,22 @@ function parseClassifierOutput(raw) {
         .map(x => ({
             speaker: String(x.speaker ?? 'unknown').trim() || 'unknown',
             gender: ['m', 'f'].includes(String(x.gender).toLowerCase()) ? String(x.gender).toLowerCase() : 'u',
-            type: x.type === 'thought' ? 'thought' : 'speech',
+            type: x.type === 'thought' ? 'thought' : x.type === 'sfx' ? 'sfx' : 'speech',
             tag: String(x.tag ?? '').replace(/[[\]]/g, '').trim(),
             text: x.text.trim(),
             ...(typeof x.orig === 'string' && x.orig.trim() ? { orig: x.orig.trim() } : {}),
         }));
 }
 
-async function runClassifier(text, prevText) {
+async function runClassifier(text, prevText, userName = null) {
     try {
-        return await runClassifierOnce(text, prevText);
+        return await runClassifierOnce(text, prevText, userName);
     } catch (e) {
         if (!(e instanceof ClassifierError)) throw e;
         // one automatic retry — models sometimes answer with prose or get cut off
         console.warn(LOG, 'classifier output unusable, retrying once. Raw output was:', e.raw);
         try {
-            return await runClassifierOnce(text, prevText);
+            return await runClassifierOnce(text, prevText, userName);
         } catch (e2) {
             if (e2 instanceof ClassifierError) {
                 console.warn(LOG, 'classifier failed twice. Raw output was:', e2.raw);
@@ -445,11 +558,25 @@ async function runClassifier(text, prevText) {
     }
 }
 
-async function runClassifierOnce(text, prevText) {
+async function runClassifierOnce(text, prevText, userName = null) {
     const s = getSettings();
     const ctx = SillyTavern.getContext();
-    const { system, user } = buildClassifierPrompt(text, prevText);
+    const { system, user } = buildClassifierPrompt(text, prevText, userName);
 
+    // never spin forever: if the classifier AI doesn't answer, give up with a clear message
+    const timeoutSec = 90;
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`대사 분류 AI가 ${timeoutSec}초 동안 응답이 없어요. 연결 프로필이나 API 상태를 확인해 주세요.`)), timeoutSec * 1000);
+    });
+    try {
+        return await Promise.race([classifierRequest(s, ctx, system, user), timeout]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function classifierRequest(s, ctx, system, user) {
     let raw;
     if (s.profileId) {
         const result = await ctx.ConnectionManagerRequestService.sendRequest(
@@ -506,6 +633,7 @@ async function getScriptInner(messageId, { force = false } = {}) {
     const textHash = hashString(text);
     const key = scriptKey(text);
     const cached = getStoredEntry(message);
+    if (Array.isArray(cached?.script)) fixUserSpeaker(cached.script, messageId);
     if (!force && Array.isArray(cached?.script)) {
         // A script the user edited is kept as long as the message text itself didn't change
         if (cached.edited && cached.textHash === textHash) return cached.script;
@@ -519,11 +647,28 @@ async function getScriptInner(messageId, { force = false } = {}) {
         if (prev) prevText = getMessageText(prev).slice(-contextChars);
     }
 
-    const script = await runClassifier(text, prevText);
+    const script = await runClassifier(text, prevText, userNameFor(messageId));
 
     setStoredEntry(message, { hash: key, textHash, script, edited: false });
     await ctx.saveChat();
     return script;
+}
+
+/**
+ * Older scripts could label the user's lines with the persona that happened to be selected
+ * (e.g. "Mia") instead of the one the chat was written with (e.g. "Edith"). If that name has
+ * no cast row, point it at the chat's user character so their voice and color apply.
+ */
+function fixUserSpeaker(script, messageId) {
+    const ctx = SillyTavern.getContext();
+    const real = userNameFor(messageId);
+    const selected = ctx.name1;
+    if (!real || !selected || normName(real) === normName(selected)) return;
+    const hasRow = name => allCastEntries().some(e => entryNames(e, selected).includes(normName(name)));
+    if (hasRow(selected)) return;
+    for (const line of script) {
+        if (normName(line?.speaker) === normName(selected)) line.speaker = real;
+    }
 }
 
 async function saveEditedScript(messageId, script) {
@@ -545,24 +690,37 @@ async function saveEditedScript(messageId, script) {
 // ---------------------------------------------------------------------------
 
 function findCastEntry(speaker) {
-    const target = normName(speaker);
-    if (!target) return null;
     const userName = SillyTavern.getContext().name1;
+    let target = normName(speaker);
+    if (!target) return null;
+    if (['{{user}}', 'user', '유저'].includes(target)) target = normName(userName);
     const entries = allCastEntries(); // bot cast first, then shared
 
-    const pick = (matches) => matches.find(e => e.voiceId) ?? matches[0] ?? null;
     // exact name/alias match ("{{user}}" counts as the persona name)
-    const exact = entries.filter(e => entryNames(e, userName).includes(target));
-    if (exact.length) return pick(exact);
+    let matches = entries.filter(e => entryNames(e, userName).includes(target));
     // looser match: one contains the other (e.g. "서윤" vs "한서윤")
-    const loose = entries.filter(e => entryNames(e, userName)
-        .some(n => n.length >= 2 && (target.includes(n) || n.includes(target))));
-    return pick(loose);
+    if (!matches.length) {
+        matches = entries.filter(e => entryNames(e, userName)
+            .some(n => n.length >= 2 && (target.includes(n) || n.includes(target))));
+    }
+    if (!matches.length) return null;
+    if (matches.length === 1) return matches[0];
+    // The same character can have rows in both casts (e.g. the persona: voice in the shared cast,
+    // highlight color in this bot's cast). Combine them: each setting comes from the first row that has it.
+    const merged = {};
+    for (const e of [...matches].reverse()) {
+        for (const [k, v] of Object.entries(e)) {
+            if (v !== '' && v !== null && v !== undefined) merged[k] = v;
+        }
+    }
+    merged.voiceId = (matches.find(e => e.voiceId) ?? {}).voiceId ?? '';
+    return merged;
 }
 
 function pickVoice(line) {
     const s = getSettings();
     if (line.voiceId) return line.voiceId; // manual override from the script editor
+    if (line.type === 'sfx') return s.sfxVoiceId || s.unknownVoiceId || s.maleVoiceId || s.femaleVoiceId || '';
     const entry = findCastEntry(line.speaker);
     if (entry?.voiceId) return entry.voiceId;
     // no voice assigned yet: use the gender from the line, or the one set in the cast row
@@ -572,12 +730,29 @@ function pickVoice(line) {
     return s.unknownVoiceId || s.maleVoiceId || s.femaleVoiceId || '';
 }
 
+/** Sound-effect lines only play when the option is on and the model understands [tags]. */
+function sfxPlayable() {
+    const s = getSettings();
+    return !!s.sfxEnabled && !!modelInfo(s.model).tags;
+}
+
 function buildTtsText(line) {
     const s = getSettings();
+    if (line.type === 'sfx') {
+        // a line with only [tags] counts as empty for ElevenLabs → add a quiet "..." so the tag has something to attach to
+        const t = String(line.text ?? '').trim();
+        const tag = t.startsWith('[') ? t.match(/^(\[[^\]]*\]\s*)+/)?.[0]?.trim() ?? t : `[${t}]`;
+        const rest = t.startsWith('[') ? t.slice(tag.length).trim() : '';
+        return `${tag} ${rest || '...'}`;
+    }
     if (!s.useTags || !modelInfo(s.model).tags) return line.text;
     const tags = [];
     if (line.type === 'thought' && s.thoughtTag?.trim()) tags.push(s.thoughtTag.trim());
-    if (line.tag && !tags.includes(line.tag)) tags.push(line.tag);
+    // the character's "always" tags (speech style), then the line's emotion tag
+    const always = String(findCastEntry(line.speaker)?.alwaysTags ?? '').split(',').map(t => t.trim().replace(/^\[|\]$/g, '')).filter(Boolean);
+    for (const t of always) if (!tags.includes(t)) tags.push(t);
+    const shaped = shapeTag(line.tag, line);
+    if (shaped && !tags.includes(shaped)) tags.push(shaped);
     return tags.map(t => `[${t}]`).join(' ') + (tags.length ? ' ' : '') + line.text;
 }
 
@@ -711,7 +886,8 @@ function voiceSettingsFor(line) {
     const entry = line ? findCastEntry(line.speaker) : null;
     const num = (v, d) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? d : Number(v));
     return {
-        stability: num(entry?.stability, Number(s.stability)),
+        // a stability set on the cast row wins; otherwise the emotional range nudges it (steadier = calmer)
+        stability: num(entry?.stability, rangeStability(entry, Number(s.stability))),
         similarity: num(entry?.similarity, Number(s.similarity)),
     };
 }
@@ -839,15 +1015,35 @@ function setStatus(messageId, html, state = 'busy') {
 
 const HL_NAME = 'voice-cast-current';
 
+let currentHlName = HL_NAME;
+
 function clearHighlight() {
-    try { globalThis.CSS?.highlights?.delete(HL_NAME); } catch { /* unsupported */ }
+    try {
+        globalThis.CSS?.highlights?.delete(HL_NAME);
+        if (currentHlName !== HL_NAME) globalThis.CSS?.highlights?.delete(currentHlName);
+    } catch { /* unsupported */ }
+}
+
+/** Highlight name for a character's color; the ::highlight() rule is added once per color. */
+function highlightNameFor(line) {
+    const color = line ? String(findCastEntry(line.speaker)?.color ?? '') : '';
+    const m = /^#([0-9a-f]{6})$/i.exec(color);
+    if (!m) return HL_NAME;
+    const name = `vc-hl-${m[1].toLowerCase()}`;
+    if (!document.getElementById(`vc_style_${name}`)) {
+        const r = parseInt(m[1].slice(0, 2), 16), g = parseInt(m[1].slice(2, 4), 16), b = parseInt(m[1].slice(4, 6), 16);
+        const style = document.createElement('style');
+        style.id = `vc_style_${name}`;
+        style.textContent = `::highlight(${name}) { background-color: rgba(${r}, ${g}, ${b}, 0.4); }`;
+        document.head.appendChild(style);
+    }
+    return name;
 }
 
 /** Letters and digits only, lowercased: immune to quotes/apostrophes (' vs ’), ellipses, markdown and spacing. */
 const MATCH_CHAR = /[\p{L}\p{N}]/u;
 
-function findTextRange(root, needle) {
-    if (!root) return null;
+function textIndex(root) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     let full = '';
     const map = []; // index in `full` -> { node, offset }
@@ -859,17 +1055,40 @@ function findTextRange(root, needle) {
             map.push({ node: n, offset: i });
         }
     }
-    const target = [...String(needle ?? '')].filter(ch => MATCH_CHAR.test(ch)).join('').toLowerCase();
-    if (!target || !full) return null;
-    let start = full.indexOf(target);
-    let end = start === -1 ? -1 : start + target.length;
-    if (start === -1 && target.length > 8) {
-        // line was edited or narration in the middle was cut out → anchor on its start, then
-        // follow the rest of the line piece by piece so the highlight still covers all of it
-        const k = Math.min(12, Math.floor(target.length / 2));
-        start = full.indexOf(target.slice(0, k));
-        if (start === -1) return null;
-        end = start + k;
+    return { full, map };
+}
+
+function bigrams(str) {
+    const m = new Map();
+    for (let i = 0; i < str.length - 1; i++) {
+        const g = str.slice(i, i + 2);
+        m.set(g, (m.get(g) ?? 0) + 1);
+    }
+    return m;
+}
+
+function dice(a, bTarget, bLen) {
+    const ga = bigrams(a);
+    let hit = 0;
+    for (const [g, n] of ga) hit += Math.min(n, bTarget.get(g) ?? 0);
+    return (2 * hit) / Math.max(1, (a.length - 1) + bLen);
+}
+
+/** Exact → follow-the-pieces → fuzzy (similar wording). Returns [start, end) in `full` or null. */
+function matchSpan(full, target, from) {
+    // 1) exact, preferring the part after the previous line
+    let idx = full.indexOf(target, from);
+    if (idx === -1) idx = full.indexOf(target);
+    if (idx !== -1) return [idx, idx + target.length];
+    if (target.length <= 8) return null;
+
+    // 2) start matches, then follow the rest piece by piece (narration cut out of the middle, small edits)
+    const k = Math.min(12, Math.floor(target.length / 2));
+    let start = full.indexOf(target.slice(0, k), from);
+    if (start === -1) start = full.indexOf(target.slice(0, k));
+    if (start !== -1) {
+        let end = start + k;
+        let matched = k;
         let i = k;
         while (i < target.length) {
             const chunk = target.slice(i, i + Math.min(5, target.length - i));
@@ -879,14 +1098,89 @@ function findTextRange(root, needle) {
             while (i + len < target.length && full[q + len] === target[i + len]) len++;
             end = q + len;
             i += len;
+            matched += len;
         }
+        if (matched / target.length >= 0.6) return [start, end];
     }
-    if (start === -1) return null;
+
+    // 3) fuzzy: the window whose wording is most similar (AI reworded the start, fixed typos, etc.)
+    const L = target.length;
+    if (full.length < L * 0.6) return null;
+    const tg = bigrams(target);
+    const tLen = L - 1;
+    const step = Math.max(1, Math.floor(L / 8));
+    let best = -1;
+    let bestAt = -1;
+    const score = (at) => {
+        const sc = dice(full.slice(at, at + L), tg, tLen);
+        // slight preference for text after the previous line
+        return at >= from ? sc + 0.02 : sc;
+    };
+    for (let at = 0; at <= Math.max(0, full.length - Math.floor(L * 0.6)); at += step) {
+        const sc = score(at);
+        if (sc > best) { best = sc; bestAt = at; }
+    }
+    if (bestAt === -1) return null;
+    for (let at = Math.max(0, bestAt - step); at <= bestAt + step; at++) {
+        const sc = score(at);
+        if (sc > best) { best = sc; bestAt = at; }
+    }
+    if (best < 0.62) return null;
+    // fine-tune the start, then the end (one edge at a time keeps it fast)
+    let bs = bestAt;
+    let be = Math.min(full.length, bestAt + L);
+    const pad = Math.min(step + 3, 20);
+    for (let st = Math.max(0, bestAt - pad); st <= Math.min(be - 2, bestAt + pad); st++) {
+        const sc = dice(full.slice(st, be), tg, tLen);
+        if (sc > best) { best = sc; bs = st; }
+    }
+    for (let en = Math.max(bs + 2, be - pad); en <= Math.min(full.length, be + pad); en++) {
+        const sc = dice(full.slice(bs, en), tg, tLen);
+        if (sc > best) { best = sc; be = en; }
+    }
+    return [bs, be, true];
+}
+
+/** Grow a fuzzy match to whole words (only where words are separated by spaces). */
+function snapToWords(map, start, end) {
+    const isWordChar = ch => ch && MATCH_CHAR.test(ch);
     const a = map[start];
+    while (a.offset > 0 && isWordChar(a.node.nodeValue[a.offset - 1])) a.offset--;
     const b = map[end - 1];
+    while (b.offset + 1 < b.node.nodeValue.length && isWordChar(b.node.nodeValue[b.offset + 1])) b.offset++;
+    return [a, b];
+}
+
+/**
+ * @param {number} [from] index (in letters/digits) where the previous line ended — keeps repeated/short lines in order
+ * @returns {Range|null} range with `vcEnd` (letters/digits index after the match)
+ */
+const spanCache = new WeakMap(); // message element → Map(key → span) — the same lookups repeat a lot
+
+function findTextRange(root, needle, from = 0) {
+    if (!root) return null;
+    const { full, map } = textIndex(root);
+    const target = [...String(needle ?? '')].filter(ch => MATCH_CHAR.test(ch)).join('').toLowerCase();
+    if (!target || !full) return null;
+    let cache = spanCache.get(root);
+    if (!cache) { cache = new Map(); spanCache.set(root, cache); }
+    const key = `${full.length}|${hashString(full)}|${Math.min(from, full.length)}|${target}`;
+    let span = cache.get(key);
+    if (span === undefined) {
+        span = matchSpan(full, target, Math.min(from, full.length));
+        if (cache.size > 500) cache.clear();
+        cache.set(key, span);
+    }
+    if (!span) return null;
+    const [start, end, fuzzy] = span;
+    let a = map[start];
+    let b = map[end - 1];
+    if (fuzzy) [a, b] = snapToWords(map, start, end).map(x => ({ ...x }));
     const range = document.createRange();
     range.setStart(a.node, a.offset);
     range.setEnd(b.node, b.offset + 1);
+    range.vcStart = start;
+    range.vcEnd = end;
     return range;
 }
 
@@ -976,16 +1270,31 @@ function findBilingualRanges(root, message, text) {
     return ranges;
 }
 
-function findLineRanges(root, messageId, text) {
+function findLineRanges(root, messageId, text, from = 0) {
     const message = SillyTavern.getContext().chat?.[messageId];
     const both = findBilingualRanges(root, message, text);
-    if (both.length) return both;
-    const single = findLineRange(root, message, text);
+    if (both.length) {
+        both.forEach(r => { delete r.vcEnd; delete r.vcStart; }); // per-paragraph positions, not usable as a message-wide cursor
+        return both;
+    }
+    const single = findLineRange(root, message, text, from);
     return single ? [single] : [];
 }
 
-function findLineRange(root, message, text) {
-    const direct = findTextRange(root, text);
+/** Where (letters/digits index) the script's line #index should start searching: right after line #index-1. */
+function cursorBefore(root, messageId, script, index) {
+    let cursor = 0;
+    for (let i = 0; i < index; i++) {
+        const l = script[i];
+        if (!l) continue;
+        const r = findLineRanges(root, messageId, l.orig ?? l.text, cursor)[0];
+        if (r?.vcEnd) cursor = r.vcEnd;
+    }
+    return cursor;
+}
+
+function findLineRange(root, message, text, from = 0) {
+    const direct = findTextRange(root, text, from);
     if (direct) return direct;
     // not on screen as-is → the other language is showing; map through the line position
     if (!message) return null;
@@ -1003,22 +1312,59 @@ function findLineRange(root, message, text) {
     return null;
 }
 
-function highlightLine(messageId, text) {
+/** @returns {number|null} where this line ended (pass as `from` for the next line) */
+function highlightLine(messageId, text, line = null, from = 0) {
     clearHighlight();
-    if (messageId === null || !getSettings().highlight) return;
-    if (!globalThis.CSS?.highlights || typeof globalThis.Highlight === 'undefined') return;
+    if (messageId === null || !getSettings().highlight) return null;
+    if (!globalThis.CSS?.highlights || typeof globalThis.Highlight === 'undefined') return null;
     const root = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
-    if (!root) return;
+    if (!root) return null;
     try {
-        const ranges = findLineRanges(root, messageId, text);
-        if (ranges.length) CSS.highlights.set(HL_NAME, new Highlight(...ranges));
+        const ranges = findLineRanges(root, messageId, text, from);
+        if (ranges.length) {
+            currentHlName = highlightNameFor(line);
+            CSS.highlights.set(currentHlName, new Highlight(...ranges));
+            return ranges[0].vcEnd ?? null;
+        }
     } catch (e) {
         console.debug(LOG, 'highlight failed', e);
     }
+    return null;
+}
+
+let paused = false;
+let nowPlaying = null; // { messageId, line, index, total } — what the bottom player shows
+
+function setNowPlaying(info) {
+    nowPlaying = info;
+    updatePlayer();
+}
+
+async function waitWhilePaused(mySession) {
+    while (paused && mySession === session) await sleep(200);
+}
+
+/** ⏯ — pause/resume; when nothing is playing, plays the last message. */
+function togglePause() {
+    const busy = playingMessageId !== null || linePlay || clipPlayKey;
+    if (!busy && lastLine && stepLine(1, { quiet: true })) return; // ⏯ while idle: go on from the line heard last
+    if (!busy) {
+        const chat = SillyTavern.getContext().chat ?? [];
+        for (let j = chat.length - 1; j >= 0; j--) {
+            if (chat[j] && !chat[j].is_system && !chat[j].is_user) { playMessage(j); return; }
+        }
+        return;
+    }
+    paused = !paused;
+    if (paused) currentAudio?.pause();
+    else currentAudio?.play().catch(() => {});
+    updatePlayer();
 }
 
 function stopPlayback() {
     session++;
+    paused = false;
+    setNowPlaying(null);
     clearHighlight();
     setLinePlaying(null);
     setClipPlaying(null);
@@ -1055,13 +1401,32 @@ function boostAudio(audio, gain) {
     }
 }
 
+let finishCurrentLine = null; // resolves the line that's playing now (used by ⏮ ⏭)
+const playCtl = { jump: null };  // ⏮ = -1, ⏭ = +1 while a message is playing
+
+/** ⏮ / ⏭ from the status pill: jump to the previous/next line of the message that's playing. */
+function skipLine(delta) {
+    if (playingMessageId === null || !finishCurrentLine) {
+        stepLine(delta);
+        return;
+    }
+    playCtl.jump = delta;
+    paused = false;
+    currentAudio?.pause();
+    finishCurrentLine();
+}
+
 function playUrl(url, mySession, line = null) {
     return new Promise((resolve) => {
         if (mySession !== session) return resolve();
+        finishCurrentLine = resolve;
         const audio = new Audio(url);
         const master = Number(getSettings().volume);
         const vol = (Number.isNaN(master) ? 1 : Math.max(0, master)) * castVolumeFor(line);
         audio.volume = Math.min(1, vol);
+        const rate = Number(getSettings().rate) || 1;
+        audio.playbackRate = Math.min(2, Math.max(0.5, rate));
+        audio.preservesPitch = true;
         if (vol > 1) boostAudio(audio, vol);
         currentAudio = audio;
         audio.onended = () => resolve();
@@ -1147,6 +1512,7 @@ function buildPlayableLines(script, { keepThoughts = false } = {}) {
     const s = getSettings();
     return script
         .filter(l => keepThoughts || s.includeThoughts || l.type !== 'thought')
+        .filter(l => l.type !== 'sfx' || keepThoughts || sfxPlayable())
         .map(l => ({ src: l, voiceId: pickVoice(l), ttsText: buildTtsText(l) }))
         .filter(l => l.voiceId || l.src.audioKey);
 }
@@ -1162,24 +1528,87 @@ function savePinsWhenDone(done, messageId) {
     });
 }
 
+const PACING = {
+    natural: { same: 250, change: 650, thought: 150, perChar: 12, narrMax: 1500, between: 1200 },
+    slow: { same: 450, change: 1000, thought: 250, perChar: 20, narrMax: 2500, between: 2000 },
+};
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Breathing room before a line: longer when the speaker changes or there's narration in between
+ * (roughly the time it takes to read that narration).
+ */
+function pauseBefore(prev, cur, narrChars) {
+    const p = PACING[getSettings().pacing];
+    if (!p || !prev) return 0;
+    let ms = normName(prev.speaker) === normName(cur.speaker) ? p.same : p.change;
+    if (cur.type === 'thought' || prev.type === 'thought') ms += p.thought;
+    if (narrChars > 0) ms += Math.min(p.narrMax, narrChars * p.perChar);
+    return ms;
+}
+
+/** Next message to go on to (skips system/empty ones). */
+function nextPlayableMessage(messageId) {
+    const chat = SillyTavern.getContext().chat ?? [];
+    for (let j = messageId + 1; j < chat.length; j++) {
+        const m = chat[j];
+        if (m && !m.is_system && getMessageText(m)) return j;
+    }
+    return null;
+}
+
 /**
  * @param {number|null} messageId message to play (null = loose script, e.g. a single-line preview)
  * @param {object} opts
  * @param {boolean} [opts.force] re-classify even if a cached script exists
  * @param {Array} [opts.script] play this script instead of the message's stored one
  */
-async function playMessage(messageId, { force = false, script: givenScript = null } = {}) {
+/** Does this message already have voice audio saved on this device (current language mode)? */
+function hasSavedAudio(messageId) {
+    const script = getStoredEntry(SillyTavern.getContext().chat?.[messageId])?.script;
+    return Array.isArray(script) && script.some(l => l?.audioKey && storeIndex?.[l.audioKey]);
+}
+
+/** Nearest message before/after this one that already has saved audio (user or bot). */
+function adjacentSavedMessage(messageId, dir) {
+    const chat = SillyTavern.getContext().chat ?? [];
+    for (let j = messageId + dir; j >= 0 && j < chat.length; j += dir) {
+        if (chat[j] && !chat[j].is_system && hasSavedAudio(j)) return j;
+    }
+    return null;
+}
+
+/** Go on to another message after a short breath (cancelled if the user stopped/started something meanwhile). */
+function hopTo(target, opts) {
+    const sessAtEnd = session;
+    const chatAtEnd = SillyTavern.getContext().chat;
+    setTimeout(() => {
+        if (session !== sessAtEnd || SillyTavern.getContext().chat !== chatAtEnd || playingMessageId !== null) return;
+        document.querySelector(`#chat .mes[mesid="${target}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        playMessage(target, opts);
+    }, opts?.quick ? 150 : (PACING[getSettings().pacing]?.between ?? 600));
+}
+
+/**
+ * @param {object} [opts.savedOnly] play only lines whose audio is already saved (never classifies or generates)
+ * @param {number|'last'} [opts.startAt] line to start from
+ */
+async function playMessage(messageId, { force = false, script: givenScript = null, savedOnly = false, startAt = 0 } = {}) {
     const s = getSettings();
     if (!s.enabled) return;
+    if (savedOnly) await loadIndex();
 
     stopPlayback();
     const mySession = session;
     playingMessageId = messageId;
     if (messageId !== null) setButtonState(messageId, true);
     let failed = false;
+    let crossDir = 0; // ⏭ on the last line → +1, ⏮ on the first line → -1
 
     try {
         let script = givenScript;
+        if (!script && savedOnly) script = getStoredEntry(SillyTavern.getContext().chat[messageId])?.script ?? [];
         if (!script) {
             const cachedBefore = getStoredEntry(SillyTavern.getContext().chat[messageId]);
             if (force || !cachedBefore) {
@@ -1189,7 +1618,8 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
         }
         if (mySession !== session) return;
 
-        const lines = buildPlayableLines(script, { keepThoughts: !!givenScript });
+        let lines = buildPlayableLines(script, { keepThoughts: !!givenScript });
+        if (savedOnly) lines = lines.filter(l => l.src.audioKey && storeIndex?.[l.src.audioKey]);
         if (!lines.length) {
             if (script.length && !s.maleVoiceId && !s.femaleVoiceId && !s.unknownVoiceId) {
                 toastr.warning('목소리가 설정되지 않았어요. 확장 설정에서 기본 목소리를 골라주세요.', 'MultiCast TTS');
@@ -1209,7 +1639,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             if (playingIndex < 0) {
                 setStatus(messageId, gen || '<i class="fa-solid fa-spinner fa-spin"></i> 준비 중…');
             } else {
-                setStatus(messageId, `<i class="fa-solid fa-volume-high"></i> ${playingIndex + 1}/${total}${gen ? ` · ${gen}` : ''}`, 'play');
+                setStatus(messageId, `<span class="vc_skip fa-solid fa-backward-step" data-d="-1" title="이전 대사"></span> <i class="fa-solid fa-volume-high"></i> ${playingIndex + 1}/${total} <span class="vc_skip fa-solid fa-forward-step" data-d="1" title="다음 대사"></span>${gen ? ` · ${gen}` : ''}`, 'play');
             }
         };
         render();
@@ -1223,14 +1653,69 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
         // newly generated audio gets pinned to the script lines → save so replays use exactly this take
         savePinsWhenDone(done, messageId);
 
-        for (let i = 0; i < audioPromises.length; i++) {
+        let hlCursor = 0;
+        let prevPlayed = null;
+        playCtl.jump = null;
+        const root = messageId !== null ? document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`) : null;
+        const first = startAt === 'last' ? lines.length - 1 : Math.min(Math.max(0, Number(startAt) || 0), lines.length - 1);
+        let jumped = first > 0;
+        for (let i = first; i < audioPromises.length; i++) {
+            if (playCtl.jump !== null) {
+                // ⏮ goes back one line (i was already moved forward by the loop), ⏭ just continues
+                const d = playCtl.jump;
+                playCtl.jump = null;
+                jumped = true;
+                if (d < 0) {
+                    if (i - 2 < 0) { crossDir = -1; break; } // ⏮ on the first line → previous message
+                    i -= 2;
+                }
+            }
             const url = await audioPromises[i];
             if (mySession !== session) return;
             if (!url) continue;
+            const lineText = lines[i].src.orig ?? lines[i].src.text;
+            if (jumped) {
+                // jumped with ⏮/⏭: no breathing pause, and search the highlight from the right spot
+                jumped = false;
+                prevPlayed = null;
+                hlCursor = root ? cursorBefore(root, messageId, lines.map(l => l.src), i) : 0;
+            }
+            // breathing room (setting): how much narration sits between the previous line and this one
+            if (prevPlayed && PACING[s.pacing]) {
+                let narr = 0;
+                if (root) {
+                    try {
+                        const r = findLineRanges(root, messageId, lineText, hlCursor)[0];
+                        if (r?.vcStart !== undefined && r.vcStart >= hlCursor) narr = r.vcStart - hlCursor;
+                    } catch { /* ignore */ }
+                }
+                await sleep(pauseBefore(prevPlayed, lines[i].src, narr));
+                if (mySession !== session) return;
+            }
+            await waitWhilePaused(mySession);
+            if (mySession !== session) return;
             playingIndex = i;
             render();
-            highlightLine(messageId, lines[i].src.orig ?? lines[i].src.text);
+            setNowPlaying({ messageId, line: lines[i].src, index: i, total: lines.length });
+            if (messageId !== null) lastLine = { messageId, index: script.indexOf(lines[i].src) };
+            const end = highlightLine(messageId, lineText, lines[i].src, hlCursor);
+            if (end) hlCursor = end;
+            prevPlayed = lines[i].src;
             await playUrl(url, mySession, lines[i].src);
+            if (mySession !== session) return;
+            // 한 줄씩: stop after each line and wait for ⏭ / ⏮ / ⏯
+            if (getSettings().stepMode && playCtl.jump === null) {
+                paused = true;
+                updatePlayer();
+                await waitWhilePaused(mySession);
+                if (mySession !== session) return;
+                if (playCtl.jump === null && i === audioPromises.length - 1) playCtl.jump = 1; // ⏯ on the last line → go on
+                prevPlayed = null; // no extra breathing pause after a manual step
+            }
+        }
+        if (playCtl.jump !== null && mySession === session) {
+            if (playCtl.jump > 0) crossDir = 1; // ⏭ on the last line → next message
+            playCtl.jump = null;
         }
     } catch (e) {
         failed = true;
@@ -1246,6 +1731,25 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             }
             playingMessageId = null;
             currentAudio = null;
+            paused = false;
+            setNowPlaying(null);
+            if (!failed && !givenScript && messageId !== null) {
+                if (crossDir) {
+                    // ⏮/⏭ past the edge: hop to the previous/next message that already has audio (no credits)
+                    const target = adjacentSavedMessage(messageId, crossDir);
+                    if (target !== null) hopTo(target, { savedOnly: true, startAt: crossDir < 0 ? 'last' : 0, quick: true });
+                    else toastr.info(crossDir > 0 ? '다음에 저장된 음성이 없어요.' : '이전에 저장된 음성이 없어요.', 'MultiCast TTS', { timeOut: 1500 });
+                } else if (getSettings().continuePlay) {
+                    // 이어 듣기
+                    if (getSettings().continueMode === 'all') {
+                        const next = nextPlayableMessage(messageId);
+                        if (next !== null) hopTo(next, {});
+                    } else {
+                        const next = adjacentSavedMessage(messageId, 1);
+                        if (next !== null) hopTo(next, { savedOnly: true });
+                    }
+                }
+            }
         }
     }
 }
@@ -1291,10 +1795,13 @@ function decorateMessage(messageId) {
     // read mode: every line that will be voiced gets a ▶ (hollow = not made yet, made on tap)
     const tappable = readMode() !== 'off' ? new Set(buildPlayableLines(script).map(l => l.src)) : new Set();
     if (!script.some(l => l?.audioKey || tappable.has(l))) return;
+    let cursor = 0;
     script.forEach((line, index) => {
-        if (!line?.audioKey && !tappable.has(line)) return;
+        if (!line) return;
         let ranges = [];
-        try { ranges = findLineRanges(root, messageId, line.orig ?? line.text); } catch { /* ignore */ }
+        try { ranges = findLineRanges(root, messageId, line.orig ?? line.text, cursor); } catch { /* ignore */ }
+        if (ranges[0]?.vcEnd) cursor = ranges[0].vcEnd;
+        if (!line.audioKey && !tappable.has(line)) return;
         for (const range of ranges) {
             const btn = document.createElement('span');
             btn.className = line.audioKey ? `${LINE_BTN} fa-solid fa-circle-play` : `${LINE_BTN} vc_line_new fa-regular fa-circle-play`;
@@ -1333,20 +1840,72 @@ function watchChatForLineButtons() {
     }).observe(chat, { childList: true, subtree: true });
 }
 
+let lastLine = null; // { messageId, index } — the line heard last, so ⏭/⏮ can go on from there
+
+/** Is this script line one that gets voiced (thought/sfx settings, has a voice)? */
+function isVoicedLine(script, line) {
+    return buildPlayableLines(script).some(l => l.src === line);
+}
+
+/**
+ * From a line, find the next/previous line to hear: same message first, then neighbouring messages
+ * that already have audio. `make` = lines without audio may be made on the spot (read-along mode).
+ */
+function findStepTarget(from, dir, make) {
+    const chat = SillyTavern.getContext().chat ?? [];
+    const ok = (script, line) => line && isVoicedLine(script, line)
+        && ((line.audioKey && storeIndex?.[line.audioKey]) || make);
+    let mesId = from.messageId;
+    let start = from.index + dir;
+    for (let hops = 0; hops < 200 && mesId >= 0 && mesId < chat.length; hops++) {
+        const script = getStoredEntry(chat[mesId])?.script;
+        if (Array.isArray(script) && !chat[mesId]?.is_system) {
+            if (start === null) start = dir > 0 ? 0 : script.length - 1;
+            for (let j = start; j >= 0 && j < script.length; j += dir) {
+                if (ok(script, script[j])) return { messageId: mesId, index: j };
+            }
+        }
+        // only cross into messages that already have audio
+        const next = adjacentSavedMessage(mesId, dir);
+        if (next === null) return null;
+        mesId = next;
+        start = null;
+    }
+    return null;
+}
+
+/** ⏮/⏭ when no whole message is playing: hear the previous/next single line. */
+function stepLine(dir, { quiet = false } = {}) {
+    if (!lastLine) return false;
+    const target = findStepTarget(lastLine, dir, readMode() !== 'off');
+    if (!target) {
+        if (!quiet) toastr.info(dir > 0 ? '다음에 들을 대사가 없어요.' : '이전에 들을 대사가 없어요.', 'MultiCast TTS', { timeOut: 1500 });
+        return !quiet;
+    }
+    if (target.messageId !== lastLine.messageId) {
+        document.querySelector(`#chat .mes[mesid="${target.messageId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    playScriptLine(target.messageId, target.index);
+    return true;
+}
+
 async function playScriptLine(messageId, index) {
     if (linePlay && linePlay.messageId === messageId && linePlay.index === index) {
         stopPlayback();
         return;
     }
     stopPlayback();
+    lastLine = { messageId, index };
     const mySession = session;
     const ctx = SillyTavern.getContext();
-    const line = getStoredEntry(ctx.chat[messageId])?.script?.[index];
+    const storedScript = getStoredEntry(ctx.chat[messageId])?.script;
+    if (Array.isArray(storedScript)) fixUserSpeaker(storedScript, messageId);
+    const line = storedScript?.[index];
     if (!line) return;
     let url = line.audioKey ? await getCachedAudio(line.audioKey) : null;
     if (mySession !== session) return;
-    if (!url && readMode() !== 'off') {
-        // read mode: make just this line now
+    if (!url && (readMode() !== 'off' || (getSettings().continuePlay && getSettings().continueMode === 'all'))) {
+        // read mode (or 이어 듣기 '전부'): make just this line now
         const voiceId = pickVoice(line);
         if (!voiceId) {
             toastr.warning('이 대사에 쓸 목소리가 없어요. 캐스트나 기본 목소리를 지정해 주세요.', 'MultiCast TTS');
@@ -1371,12 +1930,34 @@ async function playScriptLine(messageId, index) {
         return;
     }
     setLinePlaying({ messageId, index });
-    highlightLine(messageId, line.orig ?? line.text);
+    setNowPlaying({ messageId, line, index: null, total: null });
+    const hlRoot = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
+    const script = getStoredEntry(ctx.chat[messageId])?.script ?? [];
+    highlightLine(messageId, line.orig ?? line.text, line, hlRoot ? cursorBefore(hlRoot, messageId, script, index) : 0);
     await playUrl(url, mySession, line);
     if (mySession === session) {
         clearHighlight();
         setLinePlaying(null);
         currentAudio = null;
+        paused = false;
+        setNowPlaying(null);
+        // 이어 듣기 (not in 한 줄씩 mode): go on line by line, across messages that have audio
+        const s = getSettings();
+        if (s.continuePlay && !s.stepMode) {
+            const make = readMode() !== 'off' || s.continueMode === 'all';
+            const target = findStepTarget({ messageId, index }, 1, make);
+            if (target) {
+                const nextLine = getStoredEntry(SillyTavern.getContext().chat[target.messageId])?.script?.[target.index];
+                await sleep(target.messageId !== messageId
+                    ? (PACING[s.pacing]?.between ?? 600)
+                    : pauseBefore(line, nextLine ?? line, 0) || 150);
+                if (mySession !== session) return;
+                if (target.messageId !== messageId) {
+                    document.querySelector(`#chat .mes[mesid="${target.messageId}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+                playScriptLine(target.messageId, target.index);
+            }
+        }
     }
 }
 
@@ -1570,6 +2151,118 @@ async function openSavedList() {
     popup.dlg?.classList.add('vc_editor_popup');
     await popup.show();
     if (clipPlayKey) stopPlayback();
+}
+
+// ---------------------------------------------------------------------------
+// Bottom mini player — a little handle above the input; swipe it up (or tap) to open
+// ---------------------------------------------------------------------------
+
+/** Character color: the cast row's highlight color, else a soft pastel picked from the name. */
+function characterColor(name) {
+    const entry = name ? findCastEntry(name) : null;
+    if (/^#[0-9a-f]{6}$/i.test(entry?.color ?? '')) return entry.color;
+    let h = 0;
+    for (const ch of String(name ?? '?')) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    return `hsl(${h}, 70%, 72%)`;
+}
+
+let playerOpen = false;
+
+/** The player lives in the page flow right above the input bar (re-docks if ST rebuilt it). */
+function placePlayer() {
+    const el = document.getElementById('vc_player');
+    const form = document.getElementById('send_form');
+    if (el && form && el.nextElementSibling !== form) form.parentElement?.insertBefore(el, form);
+}
+
+function setPlayerOpen(open) {
+    playerOpen = !!open;
+    placePlayer();
+    $('#vc_player').attr('data-open', playerOpen ? '1' : '0');
+}
+
+function buildPlayer() {
+    if (document.getElementById('vc_player')) return;
+    const $p = $(`
+        <div id="vc_player" class="vc_player" data-open="0" data-state="idle">
+            <div class="vc_player_handle" title="MultiCast 플레이어 (위로 밀거나 눌러서 열기)">
+                <span class="vc_handle_bar"></span>
+                <span class="vc_eq vc_handle_eq"><i></i><i></i><i></i></span>
+            </div>
+            <div class="vc_player_card">
+                <span class="vc_player_avatar"></span>
+                <span class="vc_eq vc_player_eq"><i></i><i></i><i></i></span>
+                <span class="vc_player_pos"></span>
+                <div class="vc_player_btns">
+                    <div class="vc_pbtn" data-act="prev" title="이전 대사"><i class="fa-solid fa-backward-step"></i></div>
+                    <div class="vc_pbtn vc_pbtn_main" data-act="toggle" title="재생 / 일시정지"><i class="fa-solid fa-play"></i></div>
+                    <div class="vc_pbtn" data-act="next" title="다음 대사"><i class="fa-solid fa-forward-step"></i></div>
+                    <div class="vc_pbtn" data-act="stop" title="정지"><i class="fa-solid fa-stop"></i></div>
+                    <div class="vc_pbtn vc_pbtn_step" data-act="step" title="한 줄씩 듣기 (⏭ 누를 때마다 한 대사)">1</div>
+                </div>
+            </div>
+        </div>`);
+    const form = document.getElementById('send_form');
+    if (form?.parentElement) form.parentElement.insertBefore($p[0], form);
+    else $('body').append($p);
+
+    $p.on('click', '.vc_player_handle', () => setPlayerOpen(!playerOpen));
+    // pointerdown instead of click → reacts the moment the finger touches
+    $p.on('pointerdown', '.vc_pbtn', function (e) {
+        e.preventDefault();
+        const act = $(this).data('act');
+        if (act === 'toggle') togglePause();
+        else if (act === 'stop') stopPlayback();
+        else if (act === 'step') {
+            getSettings().stepMode = !getSettings().stepMode;
+            save();
+            $('#voice_cast_step').prop('checked', getSettings().stepMode);
+            toastr.info(getSettings().stepMode ? '한 줄씩 듣기: ⏭ 누를 때마다 한 대사씩' : '한 줄씩 듣기 끔', 'MultiCast TTS', { timeOut: 1500 });
+            updatePlayer();
+        }
+        else if (act === 'prev') skipLine(-1);
+        else if (act === 'next') skipLine(1);
+    });
+
+    // swipe: up on the handle opens, down on the card closes
+    let startY = null;
+    const el = $p[0];
+    el.addEventListener('touchstart', (e) => { startY = e.touches[0].clientY; }, { passive: true });
+    el.addEventListener('touchmove', (e) => {
+        if (startY === null) return;
+        const dy = e.touches[0].clientY - startY;
+        if (!playerOpen && dy < -25) { setPlayerOpen(true); startY = null; }
+        else if (playerOpen && dy > 35) { setPlayerOpen(false); startY = null; }
+    }, { passive: true });
+    el.addEventListener('touchend', () => { startY = null; }, { passive: true });
+
+    window.addEventListener('resize', placePlayer);
+    $p.find('.vc_player_handle').attr('title', 'MultiCast 플레이어 (위로 밀거나 눌러서 열기)');
+    applyPlayerSetting();
+}
+
+function applyPlayerSetting() {
+    const on = !!getSettings().player && !!getSettings().enabled;
+    $('#vc_player').toggle(on);
+    if (on) placePlayer();
+    updatePlayer();
+}
+
+function updatePlayer() {
+    const $p = $('#vc_player');
+    if (!$p.length) return;
+    const busy = !!nowPlaying;
+    $p.attr('data-state', !busy ? 'idle' : paused ? 'paused' : 'playing');
+    const line = nowPlaying?.line;
+    const isSfx = line?.type === 'sfx';
+    const name = !busy ? 'MultiCast' : isSfx ? '효과음' : (line?.speaker || '?');
+    const color = !busy ? 'hsl(36, 85%, 70%)' : characterColor(isSfx ? 'SFX' : line?.speaker);
+    $p[0].style.setProperty('--vc-c', color);
+    $p.find('.vc_player_avatar').text(isSfx ? '🔔' : [...name][0]?.toUpperCase() ?? '?').attr('title', name);
+    $p.find('.vc_player_pos').text(busy && nowPlaying.total ? `${nowPlaying.index + 1}/${nowPlaying.total}` : '');
+    $p.find('.vc_player_card').attr('title', busy ? `${name}${line?.type === 'thought' ? ' (속마음)' : ''}${paused ? ' · 일시정지' : ''}` : '대기 중 · ⏯ 누르면 마지막 메시지 재생');
+    $p.find('.vc_pbtn_step').toggleClass('vc_on', !!getSettings().stepMode);
+    $p.find('.vc_pbtn_main i').attr('class', `fa-solid ${busy && !paused ? 'fa-pause' : 'fa-play'}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1807,6 +2500,7 @@ function renderVoiceSelects() {
     $('#voice_cast_male_voice').html(voiceOptionsHtml(s.maleVoiceId));
     $('#voice_cast_female_voice').html(voiceOptionsHtml(s.femaleVoiceId));
     $('#voice_cast_unknown_voice').html(voiceOptionsHtml(s.unknownVoiceId));
+    $('#voice_cast_sfx_voice').html(voiceOptionsHtml(s.sfxVoiceId));
     renderCastList();
 }
 
@@ -1828,7 +2522,7 @@ function renderCastList() {
         }
         list.forEach((entry, i) => {
             const moveTitle = scope === 'bot' ? '공통 캐스트로 옮기기 (모든 봇에 적용)' : '이 봇 캐스트로 옮기기';
-            const hasCustom = (entry.stability ?? null) !== null || (entry.similarity ?? null) !== null || (entry.volume ?? null) !== null;
+            const hasCustom = ['stability', 'similarity', 'volume', 'temper', 'range', 'actingNote', 'alwaysTags', 'color'].some(k => (entry[k] ?? '') !== '');
             const $row = $(`
                 <div class="vc_cast_row" data-index="${i}" data-scope="${scope}">
                     <input type="text" class="text_pole vc_cast_names" placeholder="이름, 별명 (쉼표로 구분)" />
@@ -1839,11 +2533,33 @@ function renderCastList() {
                     </select>
                     <select class="text_pole vc_cast_voice">${voiceOptionsHtml(entry.voiceId)}</select>
                     <div class="vc_cast_btns">
-                        <div class="vc_cast_adv_toggle fa-solid fa-sliders ${hasCustom ? 'vc_custom' : ''}" title="이 캐릭터만 따로 설정 (음량 / Stability / Similarity)"></div>
+                        <div class="vc_cast_adv_toggle fa-solid fa-sliders ${hasCustom ? 'vc_custom' : ''}" title="이 캐릭터만 따로 설정 (성격 / 형광펜 / 음량 / Stability / Similarity)"></div>
                         ${scope === 'global' && !bot ? '' : `<div class="vc_cast_move fa-solid ${scope === 'bot' ? 'fa-globe' : 'fa-user-tag'}" title="${moveTitle}"></div>`}
                         <div class="vc_cast_delete fa-solid fa-trash-can" title="삭제"></div>
                     </div>
                     <div class="vc_cast_adv" style="display:none">
+                        <div class="vc_row">
+                            <label>성격</label>
+                            <select class="text_pole vc_cast_temper" style="width:auto">
+                                <option value="">기본 (대사대로)</option>
+                                ${Object.entries(TEMPERS).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="vc_row">
+                            <label>감정 폭</label>
+                            <select class="text_pole vc_cast_range" style="width:auto">
+                                <option value="">기본</option>
+                                ${Object.entries(RANGE_LABELS).map(([k, l]) => `<option value="${k}">${k} · ${l}</option>`).join('')}
+                            </select>
+                            <span class="vc_hint vc_cast_range_hint"></span>
+                        </div>
+                        <input type="text" class="text_pole vc_cast_always" placeholder="항상 붙일 태그 (영어, 쉼표로) 예: soft-spoken, slow drawl" title="이 캐릭터 대사마다 [태그]로 붙어서 말투를 일정하게 잡아줘요. v3/v4 전용. 1~2개 추천." />
+                        <input type="text" class="text_pole vc_cast_note" placeholder="연기 메모 (선택) 예: 화나도 목소리 안 높임, 말끝을 흐림" />
+                        <div class="vc_row">
+                            <label>형광펜 색</label>
+                            <input type="color" class="vc_cast_color" />
+                            <div class="menu_button menu_button_icon vc_cast_color_reset" title="기본 형광펜 색으로"><i class="fa-solid fa-xmark"></i><span>기본색</span></div>
+                        </div>
                         <label>음량: <span class="vc_cast_vol_val"></span></label>
                         <input type="range" class="vc_cast_vol" min="0" max="2" step="0.05" />
                         <label>Stability: <span class="vc_cast_stab_val"></span></label>
@@ -1863,6 +2579,13 @@ function renderCastList() {
             $row.find('.vc_cast_sim').val(sim ?? g.similarity);
             $row.find('.vc_cast_stab_val').text(stab === null ? `공통 (${Math.round(g.stability * 100)}%)` : `${Math.round(stab * 100)}%`);
             $row.find('.vc_cast_sim_val').text(sim === null ? `공통 (${Math.round(g.similarity * 100)}%)` : `${Math.round(sim * 100)}%`);
+            $row.find('.vc_cast_temper').val(entry.temper ?? '');
+            $row.find('.vc_cast_range').val(entry.range ? String(entry.range) : '');
+            $row.find('.vc_cast_range_hint').text(entry.range ? '' : `지금 ${rangeFor(entry)} · ${RANGE_LABELS[rangeFor(entry)]}`);
+            $row.find('.vc_cast_note').val(entry.actingNote ?? '');
+            $row.find('.vc_cast_always').val(entry.alwaysTags ?? '');
+            $row.find('.vc_cast_color').val(/^#[0-9a-f]{6}$/i.test(entry.color ?? '') ? entry.color : '#ffd54f');
+            $row.find('.vc_cast_color').toggleClass('vc_color_unset', !entry.color);
             const vol = entry.volume ?? null;
             $row.find('.vc_cast_vol').val(vol ?? 1);
             $row.find('.vc_cast_vol_val').text(vol === null ? '100%' : `${Math.round(vol * 100)}%`);
@@ -1933,6 +2656,7 @@ function editorRowHtml() {
             <select class="text_pole vc_e_type" title="종류">
                 <option value="speech">💬 대사</option>
                 <option value="thought">💭 속마음</option>
+                <option value="sfx">🔔 효과음</option>
             </select>
             <input type="text" class="text_pole vc_e_speaker" placeholder="화자" title="화자 이름 (캐스트 표와 매칭돼요)" />
             <select class="text_pole vc_e_gender" title="성별">
@@ -1956,7 +2680,7 @@ function editorRowHtml() {
 
 function makeEditorRow(line) {
     const $row = $(editorRowHtml());
-    $row.find('.vc_e_type').val(line.type === 'thought' ? 'thought' : 'speech');
+    $row.find('.vc_e_type').val(['thought', 'sfx'].includes(line.type) ? line.type : 'speech');
     $row.find('.vc_e_speaker').val(line.speaker ?? '');
     $row.find('.vc_e_gender').val(['m', 'f'].includes(line.gender) ? line.gender : 'u');
     $row.find('.vc_e_tag').val(line.tag ?? '');
@@ -1991,7 +2715,7 @@ function readEditorRow($row, { ignoreVoice = false } = {}) {
     const line = {
         speaker: String($row.find('.vc_e_speaker').val() ?? '').trim() || 'unknown',
         gender: String($row.find('.vc_e_gender').val() ?? 'u'),
-        type: $row.find('.vc_e_type').val() === 'thought' ? 'thought' : 'speech',
+        type: ['thought', 'sfx'].includes($row.find('.vc_e_type').val()) ? $row.find('.vc_e_type').val() : 'speech',
         tag: String($row.find('.vc_e_tag').val() ?? '').replace(/[[\]]/g, '').trim(),
         text: String($row.find('.vc_e_text').val() ?? '').trim(),
     };
@@ -2202,6 +2926,14 @@ async function importSettings(file) {
 // Voice language quick switch (wand menu + slash command)
 // ---------------------------------------------------------------------------
 
+/** Keep the 번역할 언어 dropdown in step when the language is changed elsewhere (slash command). */
+function syncTranslateUI() {
+    const v = String(getSettings().translateTo || '').trim();
+    const preset = $('#voice_cast_translate_pick option').filter(function () { return this.value.toLowerCase() === v.toLowerCase(); }).val();
+    $('#voice_cast_translate_pick').val(preset ?? '__custom__');
+    $('#voice_cast_translate_to').val(v).toggle(!preset);
+}
+
 function setVoiceLang(mode) {
     const s = getSettings();
     s.voiceLang = mode;
@@ -2219,8 +2951,21 @@ function cycleVoiceLang() {
     setVoiceLang(order[(cur + 1) % order.length]);
 }
 
+function setSfx(on) {
+    getSettings().sfxEnabled = !!on;
+    save();
+    $('#voice_cast_sfx').prop('checked', !!on);
+    updateWandItem();
+    if (on && !modelInfo(getSettings().model).tags) {
+        toastr.warning('지금 모델은 [태그]를 몰라서 효과음이 안 나와요. Eleven v3나 v4를 골라주세요.', 'MultiCast TTS');
+    } else {
+        toastr.info(`효과음 ${on ? '켬 (BETA)' : '끔'}`, 'MultiCast TTS', { timeOut: 1500 });
+    }
+}
+
 function updateWandItem() {
     $('#voice_cast_wand_label').text(`MultiCast TTS: ${voiceLangLabel()}`);
+    $('#voice_cast_wand_sfx_label').text(`MultiCast TTS: 효과음 ${getSettings().sfxEnabled ? '켜짐' : '꺼짐'} (BETA)`);
 }
 
 function addWandItem() {
@@ -2241,6 +2986,14 @@ function addWandItem() {
         </div>`);
     $list.on('click', openSavedList);
     $menu.append($list);
+    const $sfx = $(`
+        <div id="voice_cast_wand_sfx" class="list-group-item flex-container flexGap5" title="효과음 켜기/끄기 (BETA)">
+            <div class="extensionsMenuExtensionButton fa-solid fa-bell"></div>
+            <span id="voice_cast_wand_sfx_label"></span>
+        </div>`);
+    $sfx.on('click', () => setSfx(!getSettings().sfxEnabled));
+    $menu.append($sfx);
+    updateWandItem();
     updateWandItem();
 }
 
@@ -2256,62 +3009,13 @@ function settingsHtml() {
             </div>
             <div class="inline-drawer-content">
                 <label class="checkbox_label"><input id="voice_cast_enabled" type="checkbox" /><span>사용</span></label>
-                <label class="checkbox_label"><input id="voice_cast_auto" type="checkbox" /><span>새 답변 자동 재생</span></label>
-                <label class="checkbox_label" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
-                <div class="vc_row">
-                    <label for="voice_cast_read_mode">📖 읽으면서 듣기</label>
-                    <select id="voice_cast_read_mode" class="text_pole" style="width:auto">
-                        <option value="off">끄기</option>
-                        <option value="all">미리 다 만들기 (누르면 바로 · 크레딧 전부)</option>
-                        <option value="tap">누를 때 만들기 (들은 대사만 크레딧)</option>
-                    </select>
-                </div>
-                <div class="vc_hint">켜면 새 답변이 와도 자동 재생·편집창 없이 대사 앞에 ▶만 생겨요. 읽다가 듣고 싶은 대사만 눌러요. 🔊는 처음엔 '준비', 준비된 뒤 누르면 전체 재생이에요.</div>
-                <label class="checkbox_label" title="이미 만든 음성이 있는 대사 앞에 작은 ▶가 생겨요. 누르면 그 대사만 다시 들어요 (크레딧 안 씀)."><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기 (만든 음성만)</span></label>
-                <label class="checkbox_label" title="새 답변이 오면 분류와 음성 생성을 미리 해둬요. 🔊를 누르면 바로 나와요. 안 들을 메시지에도 크레딧이 쓰여요. (자동 재생이 켜져 있으면 그쪽이 우선)"><input id="voice_cast_pregen" type="checkbox" /><span>새 답변 음성 미리 만들어두기 (재생은 안 함 · 크레딧 사용)</span></label>
-                <label class="checkbox_label"><input id="voice_cast_thoughts" type="checkbox" /><span>속마음(*별표*)도 읽기</span></label>
-                <div class="vc_row">
-                    <label for="voice_cast_voice_lang">🌐 음성 언어</label>
-                    <select id="voice_cast_voice_lang" class="text_pole" style="width:auto">
-                        <option value="display">화면에 보이는 대로 (번역본 우선)</option>
-                        <option value="original">원문 그대로 (번역 무시)</option>
-                        <option value="translate">AI가 번역해서 읽기</option>
-                    </select>
-                </div>
-                <div id="voice_cast_translate_block" class="vc_row" style="display:none">
-                    <label for="voice_cast_translate_to">번역할 언어</label>
-                    <input id="voice_cast_translate_to" type="text" class="text_pole" style="width:140px" list="voice_cast_lang_list" placeholder="English" />
-                    <datalist id="voice_cast_lang_list">
-                        <option value="English"></option><option value="Japanese"></option><option value="Korean"></option>
-                        <option value="Chinese"></option><option value="French"></option><option value="Spanish"></option><option value="German"></option>
-                    </datalist>
-                </div>
-                <div class="vc_hint">원문/번역은 메시지마다 따로 저장돼서 왔다 갔다 해도 다시 만들지 않아요. 요술봉(🪄) 메뉴에서도 바로 바꿀 수 있어요.</div>
-                <label class="checkbox_label"><input id="voice_cast_highlight" type="checkbox" /><span>읽는 대사 채팅에 형광펜 표시</span></label>
-                <div class="vc_row">
-                    <label for="voice_cast_translation_wait">자동 재생 시 번역 기다리기 (초, 0=안 기다림)</label>
-                    <input id="voice_cast_translation_wait" type="number" class="text_pole" min="0" max="60" step="1" style="width:70px" />
-                </div>
                 <div class="vc_row">
                     <div id="voice_cast_stop" class="menu_button menu_button_icon"><i class="fa-solid fa-stop"></i><span>정지</span></div>
                     <div id="voice_cast_show_script" class="menu_button menu_button_icon"><i class="fa-solid fa-scroll"></i><span>마지막 대본 편집</span></div>
                 </div>
-
-                <div class="vc_section_title">🧠 대사 분류 AI</div>
-                <div class="vc_hint">비워두면 지금 연결된 메인 API를 써요. 싼 모델 프로필을 따로 골라두는 걸 추천!</div>
-                <select id="voice_cast_profile" class="text_pole"></select>
-                <div class="vc_row">
-                    <label for="voice_cast_max_tokens">최대 응답 토큰</label>
-                    <input id="voice_cast_max_tokens" type="number" class="text_pole" min="256" max="16000" step="128" style="width:90px" />
-                </div>
-                <div class="vc_row">
-                    <label for="voice_cast_context_chars">이전 메시지 참고 길이 (글자, 0=안 씀)</label>
-                    <input id="voice_cast_context_chars" type="number" class="text_pole" min="0" max="10000" step="100" style="width:90px" />
-                </div>
-                <label for="voice_cast_extra">추가 지시 (선택, 영어 권장)</label>
-                <textarea id="voice_cast_extra" class="text_pole" rows="2" placeholder="e.g. Lines in 「」 are phone calls."></textarea>
-
-                <div class="vc_section_title">🎙️ ElevenLabs</div>
+                <details class="vc_group" data-group="start">
+                    <summary class="vc_group_title">🔑 시작하기 · 키 · 모델 · 기본 목소리</summary>
+                    <div class="vc_group_body">
                 <div class="vc_row">
                     <div id="voice_cast_key" class="menu_button menu_button_icon manage-api-keys" data-key="api_key_elevenlabs" title="실리태번 비밀 저장소에 키를 저장해요 (기본 TTS와 공유)">
                         <i class="fa-solid fa-key"></i><span>ElevenLabs API 키 설정</span>
@@ -2333,34 +3037,6 @@ function settingsHtml() {
                     <input id="voice_cast_custom_model" type="text" class="text_pole" placeholder="예: eleven_v5" />
                     <div class="vc_hint">일레븐랩스 문서에 나온 model_id를 그대로 적으면 돼요. 새 모델은 태그 지원으로 간주해요 (아래 체크박스로 끌 수 있어요).</div>
                 </div>
-                <label class="checkbox_label"><input id="voice_cast_use_tags" type="checkbox" /><span>감정 태그로 연기시키기 [angry] 등 (v3/v4만)</span></label>
-                <div class="vc_row">
-                    <label for="voice_cast_thought_tag">속마음에 붙일 태그</label>
-                    <input id="voice_cast_thought_tag" type="text" class="text_pole" style="width:120px" placeholder="whispering" />
-                </div>
-                <label>Stability: <span id="voice_cast_stability_val"></span></label>
-                <input id="voice_cast_stability" type="range" min="0" max="1" step="0.05" />
-                <label>Similarity: <span id="voice_cast_similarity_val"></span></label>
-                <input id="voice_cast_similarity" type="range" min="0" max="1" step="0.05" />
-                <label>볼륨: <span id="voice_cast_volume_val"></span></label>
-                <input id="voice_cast_volume" type="range" min="0" max="1" step="0.05" />
-                <div class="vc_row">
-                    <label for="voice_cast_concurrency">동시 생성 개수</label>
-                    <input id="voice_cast_concurrency" type="number" class="text_pole" min="1" max="5" step="1" style="width:60px" />
-                </div>
-
-                <div class="vc_section_title">💾 저장된 음성</div>
-                <div class="vc_hint">한 번 만든 음성은 이 브라우저에 저장돼서 다시 들을 땐 크레딧을 안 써요. 용량을 넘으면 오래된 것부터 지워져요.</div>
-                <div class="vc_row">
-                    <label for="voice_cast_cache_mb">최대 용량 (MB)</label>
-                    <input id="voice_cast_cache_mb" type="number" class="text_pole" min="10" max="5000" step="10" style="width:90px" />
-                </div>
-                <div class="vc_row">
-                    <span id="voice_cast_cache_stats" class="vc_hint"></span>
-                    <div id="voice_cast_saved_list" class="menu_button menu_button_icon"><i class="fa-solid fa-list"></i><span>이 채팅 음성 목록</span></div>
-                    <div id="voice_cast_cache_clear" class="menu_button menu_button_icon"><i class="fa-solid fa-broom"></i><span>전부 지우기</span></div>
-                </div>
-
                 <div class="vc_section_title">🗣️ 기본 목소리</div>
                 <div class="vc_row">
                     <div id="voice_cast_load_voices" class="menu_button menu_button_icon"><i class="fa-solid fa-rotate"></i><span>목소리 목록 불러오기</span></div>
@@ -2371,7 +3047,11 @@ function settingsHtml() {
                 <select id="voice_cast_female_voice" class="text_pole"></select>
                 <label for="voice_cast_unknown_voice">성별 모름 (비우면 남자 목소리)</label>
                 <select id="voice_cast_unknown_voice" class="text_pole"></select>
-
+                    </div>
+                </details>
+                <details class="vc_group" data-group="cast">
+                    <summary class="vc_group_title">🎭 캐스트 (캐릭터별 목소리)</summary>
+                    <div class="vc_group_body">
                 <div id="voice_cast_bot_cast_block">
                     <div id="voice_cast_bot_cast_title" class="vc_section_title">🎭 이 봇 캐스트</div>
                     <div class="vc_hint">이 봇 채팅방에서만 쓰는 목소리예요. 새 채팅을 열어도 그대로 유지돼요. 캐릭터와 페르소나 이름은 처음 한 번 자동으로 추가되고, 고치거나 지워도 다시 생기지 않아요.</div>
@@ -2384,7 +3064,146 @@ function settingsHtml() {
                 <div class="vc_hint">어느 봇에서나 같은 목소리를 쓸 캐릭터예요 (예: 내 페르소나는 {{user}}). 이름이 겹치면 이 봇 캐스트가 우선이에요.</div>
                 <div id="voice_cast_cast_list"></div>
                 <div class="menu_button menu_button_icon vc_cast_add" data-scope="global"><i class="fa-solid fa-plus"></i><span>캐릭터 추가</span></div>
-
+                    </div>
+                </details>
+                <details class="vc_group" data-group="play">
+                    <summary class="vc_group_title">▶️ 재생</summary>
+                    <div class="vc_group_body">
+                <label class="checkbox_label"><input id="voice_cast_auto" type="checkbox" /><span>새 답변 자동 재생</span></label>
+                <div class="vc_row">
+                    <label for="voice_cast_read_mode">📖 읽으면서 듣기</label>
+                    <select id="voice_cast_read_mode" class="text_pole" style="width:auto">
+                        <option value="off">끄기</option>
+                        <option value="all">미리 다 만들기 (누르면 바로 · 크레딧 전부)</option>
+                        <option value="tap">누를 때 만들기 (들은 대사만 크레딧)</option>
+                    </select>
+                </div>
+                <div class="vc_hint">켜면 새 답변이 와도 자동 재생·편집창 없이 대사 앞에 ▶만 생겨요. 읽다가 듣고 싶은 대사만 눌러요. 🔊는 처음엔 '준비', 준비된 뒤 누르면 전체 재생이에요.</div>
+                <label class="checkbox_label" title="새 답변이 오면 분류와 음성 생성을 미리 해둬요. 🔊를 누르면 바로 나와요. 안 들을 메시지에도 크레딧이 쓰여요. (자동 재생이 켜져 있으면 그쪽이 우선)"><input id="voice_cast_pregen" type="checkbox" /><span>새 답변 음성 미리 만들어두기 (재생은 안 함 · 크레딧 사용)</span></label>
+                <div class="vc_row">
+                    <label for="voice_cast_pacing">🌬️ 호흡 (대사 사이 쉼)</label>
+                    <select id="voice_cast_pacing" class="text_pole" style="width:auto">
+                        <option value="off">바로 이어서</option>
+                        <option value="natural">자연스럽게</option>
+                        <option value="slow">여유 있게</option>
+                    </select>
+                </div>
+                <div class="vc_hint">말하는 사람이 바뀌거나 사이에 지문이 길면 그만큼 더 쉬어요 (지문 읽는 시간만큼).</div>
+                <label class="checkbox_label"><input id="voice_cast_continue" type="checkbox" /><span>이어 듣기 (메시지가 끝나면 다음 메시지로 자동으로 넘어가기)</span></label>
+                <label class="checkbox_label"><input id="voice_cast_step" type="checkbox" /><span>한 줄씩 듣기 (대사 하나 끝날 때마다 멈추고 ⏭를 기다려요 · 플레이어의 '1' 버튼과 같아요)</span></label>
+                <div class="vc_row">
+                    <label for="voice_cast_continue_mode">이어 들을 메시지</label>
+                    <select id="voice_cast_continue_mode" class="text_pole" style="width:auto">
+                        <option value="saved">이미 만든 음성만 (크레딧 X)</option>
+                        <option value="all">전부 (없으면 새로 만들기 · 크레딧 O)</option>
+                    </select>
+                </div>
+                <div class="vc_hint">⏮ ⏭는 메시지 끝에서 누르면 이전/다음 메시지로 넘어가요. 이미 만든 음성이 있는 메시지로만 넘어가서 크레딧을 안 써요 (깡통 · 유저 메시지 모두).</div>
+                <label>볼륨: <span id="voice_cast_volume_val"></span></label>
+                <input id="voice_cast_volume" type="range" min="0" max="1" step="0.05" />
+                <label>재생 속도: <span id="voice_cast_rate_val"></span></label>
+                <input id="voice_cast_rate" type="range" min="0.7" max="1.5" step="0.05" />
+                <div class="vc_row">
+                    <label for="voice_cast_translation_wait">자동 재생 시 번역 기다리기 (초, 0=안 기다림)</label>
+                    <input id="voice_cast_translation_wait" type="number" class="text_pole" min="0" max="60" step="1" style="width:70px" />
+                </div>
+                <div class="vc_row">
+                    <label for="voice_cast_concurrency">동시 생성 개수</label>
+                    <input id="voice_cast_concurrency" type="number" class="text_pole" min="1" max="5" step="1" style="width:60px" />
+                </div>
+                    </div>
+                </details>
+                <details class="vc_group" data-group="view">
+                    <summary class="vc_group_title">🎨 화면</summary>
+                    <div class="vc_group_body">
+                <label class="checkbox_label" title="입력창 위에 작은 손잡이가 생겨요. 위로 밀거나 누르면 플레이어가 올라와요."><input id="voice_cast_player" type="checkbox" /><span>🎧 하단 플레이어 (손잡이를 위로 밀거나 눌러서 열기)</span></label>
+                <label class="checkbox_label" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
+                <label class="checkbox_label" title="이미 만든 음성이 있는 대사 앞에 작은 ▶가 생겨요. 누르면 그 대사만 다시 들어요 (크레딧 안 씀)."><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기 (만든 음성만)</span></label>
+                <label class="checkbox_label"><input id="voice_cast_highlight" type="checkbox" /><span>읽는 대사 채팅에 형광펜 표시</span></label>
+                    </div>
+                </details>
+                <details class="vc_group" data-group="acting">
+                    <summary class="vc_group_title">🧠 대사 분류 · 연기</summary>
+                    <div class="vc_group_body">
+                <label class="checkbox_label"><input id="voice_cast_thoughts" type="checkbox" /><span>속마음(*별표*)도 읽기</span></label>
+                <div class="vc_row">
+                    <label for="voice_cast_voice_lang">🌐 음성 언어</label>
+                    <select id="voice_cast_voice_lang" class="text_pole" style="width:auto">
+                        <option value="display">화면에 보이는 대로 (번역본 우선)</option>
+                        <option value="original">원문 그대로 (번역 무시)</option>
+                        <option value="translate">AI가 번역해서 읽기</option>
+                    </select>
+                </div>
+                <div id="voice_cast_translate_block" class="vc_row" style="display:none">
+                    <label for="voice_cast_translate_pick">번역할 언어</label>
+                    <select id="voice_cast_translate_pick" class="text_pole" style="width:auto">
+                        <option value="English">English · 영어</option>
+                        <option value="Japanese">Japanese · 일본어</option>
+                        <option value="Korean">Korean · 한국어</option>
+                        <option value="Chinese">Chinese · 중국어</option>
+                        <option value="French">French · 프랑스어</option>
+                        <option value="Spanish">Spanish · 스페인어</option>
+                        <option value="German">German · 독일어</option>
+                        <option value="__custom__">✏️ 직접 입력</option>
+                    </select>
+                    <input id="voice_cast_translate_to" type="text" class="text_pole" style="width:140px; display:none" placeholder="예: Italian" />
+                </div>
+                <div class="vc_hint">원문/번역은 메시지마다 따로 저장돼서 왔다 갔다 해도 다시 만들지 않아요. 요술봉(🪄) 메뉴에서도 바로 바꿀 수 있어요.</div>
+                <div class="vc_section_title">🧠 대사 분류 AI</div>
+                <div class="vc_hint">비워두면 지금 연결된 메인 API를 써요. 싼 모델 프로필을 따로 골라두는 걸 추천!</div>
+                <select id="voice_cast_profile" class="text_pole"></select>
+                <div class="vc_row">
+                    <label for="voice_cast_max_tokens">최대 응답 토큰</label>
+                    <input id="voice_cast_max_tokens" type="number" class="text_pole" min="256" max="16000" step="128" style="width:90px" />
+                </div>
+                <div class="vc_row">
+                    <label for="voice_cast_context_chars">이전 메시지 참고 길이 (글자, 0=안 씀)</label>
+                    <input id="voice_cast_context_chars" type="number" class="text_pole" min="0" max="10000" step="100" style="width:90px" />
+                </div>
+                <div class="vc_row">
+                    <label for="voice_cast_emotion">🎭 감정 연기 강도</label>
+                    <select id="voice_cast_emotion" class="text_pole" style="width:auto">
+                        <option value="subtle">은은하게</option>
+                        <option value="natural">자연스럽게 (기본)</option>
+                        <option value="strong">과감하게</option>
+                    </select>
+                </div>
+                <div class="vc_hint">감정 폭을 따로 안 정한 캐릭터의 기본값이에요 (은은하게 2 · 자연스럽게 3 · 과감하게 5). 캐릭터마다 성격·감정 폭은 캐스트 줄의 🎚에서 정해요. 새로 분류하는 대사부터 적용돼요.</div>
+                <label for="voice_cast_extra">추가 지시 (선택, 영어 권장)</label>
+                <textarea id="voice_cast_extra" class="text_pole" rows="2" placeholder="e.g. Lines in 「」 are phone calls."></textarea>
+                <label class="checkbox_label"><input id="voice_cast_use_tags" type="checkbox" /><span>감정 태그로 연기시키기 [angry] 등 (v3/v4만)</span></label>
+                <div class="vc_row">
+                    <label for="voice_cast_thought_tag">속마음에 붙일 태그</label>
+                    <input id="voice_cast_thought_tag" type="text" class="text_pole" style="width:120px" placeholder="whispering" />
+                </div>
+                <label>Stability: <span id="voice_cast_stability_val"></span></label>
+                <input id="voice_cast_stability" type="range" min="0" max="1" step="0.05" />
+                <label>Similarity: <span id="voice_cast_similarity_val"></span></label>
+                <input id="voice_cast_similarity" type="range" min="0" max="1" step="0.05" />
+                    </div>
+                </details>
+                <details class="vc_group" data-group="sfx">
+                    <summary class="vc_group_title">🔔 효과음 <span class="vc_beta">BETA</span></summary>
+                    <div class="vc_group_body">
+                <label class="checkbox_label"><input id="voice_cast_sfx" type="checkbox" /><span>효과음 넣기 (지문의 문 쾅, 총소리 같은 소리를 따로 한 줄로)</span></label>
+                <div class="vc_hint">Eleven v3 / v4 / v4 Turbo처럼 [태그]를 아는 모델에서만 나와요. 효과음은 대사와 섞지 않고 대본에 🔔 효과음 줄로 따로 들어가서, 편집기에서 고치거나 지울 수 있어요. 켠 뒤 새로 분류하는 메시지부터 들어가요. 품질은 아직 들쭉날쭉해요.</div>
+                <label for="voice_cast_sfx_voice">효과음에 쓸 목소리 (비우면 '성별 모름' 목소리)</label>
+                <select id="voice_cast_sfx_voice" class="text_pole"></select>
+                    </div>
+                </details>
+                <details class="vc_group" data-group="store">
+                    <summary class="vc_group_title">💾 저장된 음성 · 설정 옮기기</summary>
+                    <div class="vc_group_body">
+                <div class="vc_hint">한 번 만든 음성은 이 브라우저에 저장돼서 다시 들을 땐 크레딧을 안 써요. 용량을 넘으면 오래된 것부터 지워져요.</div>
+                <div class="vc_row">
+                    <label for="voice_cast_cache_mb">최대 용량 (MB)</label>
+                    <input id="voice_cast_cache_mb" type="number" class="text_pole" min="10" max="5000" step="10" style="width:90px" />
+                </div>
+                <div class="vc_row">
+                    <span id="voice_cast_cache_stats" class="vc_hint"></span>
+                    <div id="voice_cast_saved_list" class="menu_button menu_button_icon"><i class="fa-solid fa-list"></i><span>이 채팅 음성 목록</span></div>
+                    <div id="voice_cast_cache_clear" class="menu_button menu_button_icon"><i class="fa-solid fa-broom"></i><span>전부 지우기</span></div>
+                </div>
                 <div class="vc_section_title">📦 설정 옮기기</div>
                 <div class="vc_hint">캐스트(봇별·공통), 기본 목소리, 분류·연기 설정을 파일 하나로 저장하고 다른 기기에서 불러와요. API 키는 들어가지 않아요.</div>
                 <div class="vc_row">
@@ -2392,6 +3211,8 @@ function settingsHtml() {
                     <div id="voice_cast_import" class="menu_button menu_button_icon"><i class="fa-solid fa-file-import"></i><span>가져오기</span></div>
                     <input id="voice_cast_import_file" type="file" accept=".json,application/json" style="display:none" />
                 </div>
+                    </div>
+                </details>
             </div>
         </div>
     </div>`;
@@ -2427,9 +3248,12 @@ function bindSettingsUI() {
     const pct = v => `${Math.round(Number(v) * 100)}%`;
 
     bindCheck('#voice_cast_enabled', 'enabled');
+    $('#voice_cast_enabled').on('change', applyPlayerSetting);
     bindCheck('#voice_cast_auto', 'autoPlay');
     bindCheck('#voice_cast_pregen', 'pregenerate');
     bindCheck('#voice_cast_quick', 'quickButtons');
+    bindCheck('#voice_cast_player', 'player');
+    $('#voice_cast_player').on('change', applyPlayerSetting);
     bindCheck('#voice_cast_line_btns', 'lineButtons');
     $('#voice_cast_read_mode').val(readMode()).on('change', function () {
         s.readMode = String($(this).val());
@@ -2445,7 +3269,24 @@ function bindSettingsUI() {
         $('#voice_cast_translate_block').toggle(s.voiceLang === 'translate');
         updateWandItem();
     };
-    $('#voice_cast_translate_to').val(s.translateTo);
+    const LANG_PRESETS = ['English', 'Japanese', 'Korean', 'Chinese', 'French', 'Spanish', 'German'];
+    const syncTranslatePick = () => {
+        const preset = LANG_PRESETS.find(l => l.toLowerCase() === String(s.translateTo || '').trim().toLowerCase());
+        $('#voice_cast_translate_pick').val(preset ?? '__custom__');
+        $('#voice_cast_translate_to').val(s.translateTo).toggle(!preset);
+    };
+    syncTranslatePick();
+    $('#voice_cast_translate_pick').on('change', function () {
+        const v = String($(this).val());
+        if (v === '__custom__') {
+            $('#voice_cast_translate_to').val('').show().trigger('focus');
+            return;
+        }
+        s.translateTo = v;
+        $('#voice_cast_translate_to').val(v).hide();
+        save();
+        updateWandItem();
+    });
     syncLangUI();
     $('#voice_cast_voice_lang').on('change', function () {
         s.voiceLang = String($(this).val());
@@ -2467,7 +3308,33 @@ function bindSettingsUI() {
     bindRange('#voice_cast_stability', 'stability', pct);
     bindRange('#voice_cast_similarity', 'similarity', pct);
     bindRange('#voice_cast_volume', 'volume', pct);
+    bindRange('#voice_cast_rate', 'rate', v => `${Number(v).toFixed(2).replace(/0$/, '')}배`);
+    $('#voice_cast_rate').on('input', function () { if (currentAudio) currentAudio.playbackRate = Number($(this).val()) || 1; });
+    // remember which setting groups are open
+    $('#voice_cast_settings .vc_group').each(function () {
+        this.open = (s.openGroups ?? []).includes(this.dataset.group);
+    }).on('toggle', function () {
+        const set = new Set(s.openGroups ?? []);
+        if (this.open) set.add(this.dataset.group); else set.delete(this.dataset.group);
+        s.openGroups = [...set];
+        save();
+    });
+    $('#voice_cast_pacing').val(s.pacing).on('change', function () {
+        s.pacing = String($(this).val());
+        save();
+    });
+    bindCheck('#voice_cast_continue', 'continuePlay');
+    bindCheck('#voice_cast_step', 'stepMode');
+    $('#voice_cast_step').on('change', updatePlayer);
+    $('#voice_cast_continue_mode').val(s.continueMode).on('change', function () {
+        s.continueMode = String($(this).val());
+        save();
+    });
 
+    $('#voice_cast_emotion').val(s.emotionLevel).on('change', function () {
+        s.emotionLevel = String($(this).val());
+        save();
+    });
     $('#voice_cast_extra').val(s.extraInstructions).on('input', function () {
         s.extraInstructions = String($(this).val());
         save();
@@ -2543,6 +3410,8 @@ function bindSettingsUI() {
     $('#voice_cast_male_voice').on('change', function () { s.maleVoiceId = String($(this).val()); save(); });
     $('#voice_cast_female_voice').on('change', function () { s.femaleVoiceId = String($(this).val()); save(); });
     $('#voice_cast_unknown_voice').on('change', function () { s.unknownVoiceId = String($(this).val()); save(); });
+    $('#voice_cast_sfx_voice').on('change', function () { s.sfxVoiceId = String($(this).val()); save(); });
+    $('#voice_cast_sfx').prop('checked', !!s.sfxEnabled).on('change', function () { setSfx($(this).prop('checked')); });
     $('#voice_cast_load_voices').on('click', () => loadVoices(true));
 
     // Cast list (delegated)
@@ -2584,6 +3453,52 @@ function bindSettingsUI() {
             const $adv = $(this).closest('.vc_cast_row').find('.vc_cast_adv');
             if (openAdv.has(id)) { openAdv.delete(id); $adv.hide(); } else { openAdv.add(id); $adv.show(); }
         })
+        .on('change', '.vc_cast_temper', function () {
+            const { list, i } = rowRef(this);
+            if (!list?.[i]) return;
+            const v = String($(this).val() ?? '');
+            if (v) list[i].temper = v; else delete list[i].temper;
+            save();
+            renderCastList();
+        })
+        .on('change', '.vc_cast_range', function () {
+            const { list, i } = rowRef(this);
+            if (!list?.[i]) return;
+            const v = Number($(this).val());
+            if (v >= 1 && v <= 5) list[i].range = v; else delete list[i].range;
+            save();
+            renderCastList();
+        })
+        .on('change', '.vc_cast_always', function () {
+            const { list, i } = rowRef(this);
+            if (!list?.[i]) return;
+            const v = String($(this).val() ?? '').split(',').map(t => t.trim().replace(/^\[|\]$/g, '')).filter(Boolean).join(', ');
+            if (v) list[i].alwaysTags = v; else delete list[i].alwaysTags;
+            $(this).val(v);
+            save();
+        })
+        .on('change', '.vc_cast_note', function () {
+            const { list, i } = rowRef(this);
+            if (!list?.[i]) return;
+            const v = String($(this).val() ?? '').trim();
+            if (v) list[i].actingNote = v; else delete list[i].actingNote;
+            save();
+        })
+        .on('input change', '.vc_cast_color', function () {
+            const { list, i } = rowRef(this);
+            if (!list?.[i]) return;
+            list[i].color = String($(this).val());
+            $(this).removeClass('vc_color_unset');
+            $(this).closest('.vc_cast_row').find('.vc_cast_adv_toggle').addClass('vc_custom');
+            save();
+        })
+        .on('click', '.vc_cast_color_reset', function () {
+            const { list, i } = rowRef(this);
+            if (!list?.[i]) return;
+            delete list[i].color;
+            save();
+            renderCastList();
+        })
         .on('input', '.vc_cast_vol', function () {
             const { list, i } = rowRef(this);
             if (!list?.[i]) return;
@@ -2611,6 +3526,11 @@ function bindSettingsUI() {
             delete list[i].stability;
             delete list[i].similarity;
             delete list[i].volume;
+            delete list[i].temper;
+            delete list[i].range;
+            delete list[i].actingNote;
+            delete list[i].alwaysTags;
+            delete list[i].color;
             save();
             renderCastList();
         })
@@ -2704,7 +3624,7 @@ function registerCommands() {
             const map = { display: 'display', screen: 'display', '화면': 'display', original: 'original', '원문': 'original', translate: 'translate', '번역': 'translate' };
             if (!v) cycleVoiceLang();
             else if (map[v]) setVoiceLang(map[v]);
-            else { getSettings().translateTo = String(value).trim(); setVoiceLang('translate'); $('#voice_cast_translate_to').val(getSettings().translateTo); }
+            else { getSettings().translateTo = String(value).trim(); setVoiceLang('translate'); syncTranslateUI(); }
             return voiceLangLabel();
         },
         helpString: '<div>음성 언어 바꾸기. <code>/voicecast-lang</code> (순서대로 전환), <code>/voicecast-lang 원문</code>, <code>/voicecast-lang 화면</code>, <code>/voicecast-lang English</code> (그 언어로 AI 번역)</div>',
@@ -2732,6 +3652,8 @@ jQuery(async () => {
 
     injectButtons();
     applyQuickButtons();
+    buildPlayer();
+    loadIndex(); // so ⏮/⏭ know right away which messages already have audio
     watchChatForLineButtons();
     refreshLineButtons();
     // capture phase: a ▶ inside a translator's <summary> must not fold/unfold it
@@ -2745,6 +3667,7 @@ jQuery(async () => {
     }, true);
     $(document).on('click', '.vc_play_btn', onButtonClick);
     $(document).on('click', '.vc_edit_btn', onEditButtonClick);
+    $(document).on('click', '.vc_skip', (e) => { e.stopPropagation(); skipLine(Number($(e.currentTarget).data('d')) || 1); });
     $(document).on('click', '.vc_status', (e) => { e.stopPropagation(); stopPlayback(); });
 
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);

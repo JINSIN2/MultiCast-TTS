@@ -319,3 +319,271 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 .vc_line_play.vc_line_loading {
     opacity: 0.8;
 }
+
+/* per-character highlight color picker */
+#voice_cast_settings .vc_cast_color {
+    width: 36px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+}
+
+#voice_cast_settings .vc_cast_color.vc_color_unset {
+    opacity: 0.45;
+}
+
+#voice_cast_settings .vc_cast_always,
+#voice_cast_settings .vc_cast_note {
+    width: 100%;
+    margin: 2px 0 4px;
+}
+
+/* ⏮ ⏭ inside the status pill */
+.vc_status .vc_skip {
+    cursor: pointer;
+    padding: 0 3px;
+    opacity: 0.75;
+}
+
+.vc_status .vc_skip:hover {
+    opacity: 1;
+}
+
+/* BETA badge */
+#voice_cast_settings .vc_beta {
+    font-size: 0.7em;
+    font-weight: normal;
+    padding: 1px 6px;
+    margin-left: 4px;
+    border-radius: 999px;
+    border: 1px solid rgba(232, 163, 61, 0.6);
+    color: var(--active, #e8a33d);
+    vertical-align: middle;
+}
+
+/* ---- Bottom mini player: a drawer docked right above the input bar ---- */
+.vc_player {
+    --vc-c: hsl(36, 85%, 70%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    font-family: inherit;
+}
+
+/* closed: just a tiny grabber line (like a sheet handle) */
+.vc_player_handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    width: 120px;
+    max-width: 100%;
+    padding: 5px 0 4px;
+    cursor: pointer;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    position: relative;
+}
+
+.vc_handle_bar {
+    width: 30px;
+    height: 3px;
+    border-radius: 10px;
+    background: var(--SmartThemeBodyColor, #ccc);
+    opacity: 0.35;
+    transition: width 0.25s ease, opacity 0.25s ease, background 0.25s ease;
+}
+
+.vc_player[data-state="playing"] .vc_handle_bar,
+.vc_player[data-state="paused"] .vc_handle_bar,
+.vc_player_handle:hover .vc_handle_bar,
+.vc_player[data-open="1"] .vc_handle_bar {
+    width: 46px;
+    opacity: 0.85;
+    background: var(--vc-c);
+}
+
+.vc_handle_eq {
+    position: absolute;
+    left: calc(50% + 30px);
+    top: 1px;
+    transform: scale(0.7);
+}
+
+.vc_player[data-open="1"] .vc_handle_eq {
+    display: none;
+}
+
+.vc_player_card {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-height: 0;
+    margin-bottom: 0;
+    padding: 0 6px 0 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--SmartThemeBlurTintColor, #23262d);
+    border: 1.5px solid transparent;
+    color: var(--SmartThemeBodyColor, #eee);
+    opacity: 0;
+    transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.25s ease, margin 0.25s ease, border-color 0.2s;
+}
+
+.vc_player[data-open="1"] .vc_player_card {
+    max-height: 40px;
+    padding: 3px 6px 3px 4px;
+    margin-bottom: 5px;
+    opacity: 1;
+    border-color: color-mix(in srgb, var(--vc-c) 65%, transparent);
+}
+
+.vc_player_avatar {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-weight: bold;
+    font-size: 0.8em;
+    color: #2b2620;
+    background: var(--vc-c);
+}
+
+.vc_player[data-state="playing"] .vc_player_avatar {
+    animation: vc_bob 1.2s ease-in-out infinite;
+}
+
+.vc_player_pos {
+    font-size: 0.75em;
+    opacity: 0.75;
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+}
+
+.vc_player_pos:empty {
+    display: none;
+}
+
+.vc_player_btns {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.vc_pbtn {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    font-size: 0.8em;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+
+.vc_pbtn:active {
+    transform: scale(0.85);
+    background: color-mix(in srgb, var(--vc-c) 25%, transparent);
+}
+
+.vc_pbtn_main {
+    width: 28px;
+    height: 28px;
+    color: #2b2620;
+    background: var(--vc-c);
+}
+
+/* little equalizer bars */
+.vc_eq {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 12px;
+}
+
+.vc_eq i {
+    width: 3px;
+    height: 30%;
+    border-radius: 2px;
+    background: var(--vc-c);
+}
+
+.vc_player[data-state="playing"] .vc_eq i {
+    animation: vc_eq 0.9s ease-in-out infinite;
+}
+
+.vc_player[data-state="playing"] .vc_eq i:nth-child(2) { animation-delay: -0.3s; }
+.vc_player[data-state="playing"] .vc_eq i:nth-child(3) { animation-delay: -0.6s; }
+.vc_player[data-state="playing"] .vc_eq i:nth-child(4) { animation-delay: -0.15s; }
+
+.vc_player[data-state="idle"] .vc_handle_eq {
+    display: none;
+}
+
+@keyframes vc_eq {
+    0%, 100% { height: 25%; }
+    50% { height: 100%; }
+}
+
+@keyframes vc_bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-3px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .vc_player * { animation: none !important; transition: none !important; }
+}
+
+.vc_pbtn_step {
+    font-weight: bold;
+    font-size: 0.75em;
+    opacity: 0.5;
+}
+
+.vc_pbtn_step.vc_on {
+    opacity: 1;
+    color: var(--vc-c);
+    box-shadow: inset 0 0 0 1.5px var(--vc-c);
+}
+
+/* ---- Settings groups ---- */
+#voice_cast_settings .vc_group {
+    margin: 6px 0;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    border-radius: 8px;
+}
+
+#voice_cast_settings .vc_group_title {
+    padding: 6px 10px;
+    cursor: pointer;
+    font-weight: bold;
+    list-style: none;
+    user-select: none;
+}
+
+#voice_cast_settings .vc_group_title::-webkit-details-marker {
+    display: none;
+}
+
+#voice_cast_settings .vc_group_title::before {
+    content: '▸';
+    display: inline-block;
+    width: 1em;
+    opacity: 0.6;
+    transition: transform 0.15s ease;
+}
+
+#voice_cast_settings .vc_group[open] > .vc_group_title::before {
+    transform: rotate(90deg);
+}
+
+#voice_cast_settings .vc_group_body {
+    padding: 0 10px 8px;
+}
