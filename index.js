@@ -843,7 +843,7 @@ function parseFastOutput(raw, segs) {
 }
 
 // ---------------------------------------------------------------------------
-// 답변에 화자 표시 받기 (BETA): the RP model writes <v n="Name" e="emotion">"line"</v>
+// 🚀 기다림 없이 바로 듣기 (BETA, internal: inlineTags): the RP model writes <v n="Name" e="emotion">"line"</v>
 // ---------------------------------------------------------------------------
 
 const INLINE_PROMPT_KEY = 'voice_cast_inline_tags';
@@ -1047,7 +1047,7 @@ async function getScriptInner(messageId, { force = false } = {}) {
 
     let script = null;
     let fromTags = false;
-    // 답변에 화자 표시: the model already said who speaks — no classifier call at all
+    // 기다림 없이 바로 듣기: the model already said who speaks — no classifier call at all
     if (s.inlineTags && !message.is_user && s.voiceLang !== 'translate') {
         script = scriptFromVoiceTags(message, text);
         fromTags = !!script;
@@ -4728,8 +4728,9 @@ function settingsHtml() {
                 <select id="voice_cast_profile" class="text_pole"></select>
                 <label class="checkbox_label"><input id="voice_cast_solo" type="checkbox" /><span id="voice_cast_solo_label">이 봇은 1인 모드</span></label>
                 <div class="vc_hint vc_sub">👤 AI 분류 없이 따옴표 대사를 전부 이 봇 목소리로 바로 읽어요 (내 메시지는 내 목소리). 기다림·비용 0. 감정 태그와 효과음은 빠지고, 조연 대사도 봇 목소리로 나와요. 봇마다 따로 기억해요.</div>
-                <label class="checkbox_label"><input id="voice_cast_inline" type="checkbox" /><span>✨ 답변에 화자 표시 받기 <span class="vc_beta">BETA</span></span></label>
-                <div class="vc_hint vc_sub">RP 모델이 답변을 쓸 때 대사마다 숨은 표시(누가·어떤 감정)를 같이 달게 해요. 분류 AI를 안 불러서 기다림·비용 0. 표시는 화면에서 숨겨져요. 모델이 표시를 빼먹으면 아래 빠른 분류(또는 원래 방식)로 해요. 켠 뒤 새로 받는 답변부터 적용돼요.</div>
+                <label class="checkbox_label"><input id="voice_cast_inline" type="checkbox" /><span>🚀 기다림 없이 바로 듣기 <span class="vc_beta">BETA</span></span></label>
+                <div class="vc_hint vc_sub">답변을 쓸 때 대본도 같이 만들어서, 분류를 안 기다려요</div>
+                <div class="vc_hint vc_sub">RP 모델이 답변을 쓰면서 대사마다 누가·어떤 감정인지 숨은 표시를 같이 달아요. 분류 AI를 따로 안 불러서 기다림·비용이 0이에요. 표시는 화면에 안 보이고, 대본을 만든 뒤 지워져요. 모델이 표시를 빼먹은 답변은 아래 빠른 분류로 해요. 켠 뒤 새로 받는 답변부터 적용돼요. RP 프롬프트에 짧은 지시문이 들어가니, 답변이 이상해지면 꺼주세요.</div>
                 <label class="checkbox_label"><input id="voice_cast_fast" type="checkbox" /><span>⚡ 빠른 분류</span></label>
                 <div class="vc_hint vc_sub">따옴표 대사를 확장이 먼저 뽑고, AI는 누가·어떤 감정인지만 짧게 답해요. 훨씬 빨라요. 속마음 읽기를 켜면 *별표* 구간도 AI가 속마음인지 지문인지 골라요. 따옴표·별표가 없거나 'AI 번역해서 읽기'를 켜면 원래 방식으로 해요.</div>
                 <div class="vc_row">
@@ -5144,7 +5145,8 @@ function foldLongHints() {
             hint.hidden = !hint.hidden;
             $i.toggleClass('vc_on', !hint.hidden);
         });
-        const prev = this.previousElementSibling;
+        let prev = this.previousElementSibling;
+        if (prev?.matches('.vc_hint') && !prev.dataset.vcFold && prev.previousElementSibling?.matches('label, .checkbox_label')) prev = prev.previousElementSibling;
         if (prev && (prev.matches('label, .checkbox_label, .vc_row, .vc_section_title') )) {
             const $label = prev.matches('.checkbox_label') ? $(prev).find('span').first() : $(prev);
             $label.append(' ', $i);
