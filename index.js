@@ -2513,21 +2513,39 @@ function fadeAudio(audio, to, ms, then) {
         if (k >= 1) { clearInterval(audio._vcFade); then?.(); }
     }, 40);
 }
+// up to 3 loops play together (kiss + bed creak …); the more there are, the softer each one gets
+const BED_MAX = 3;
+const BED_GAIN = [1, 0.8, 0.65];
+function activeBeds() {
+    return [...bedAudios].filter(a => !a._vcStopping);
+}
+function balanceBeds(ms = 400) {
+    const live = activeBeds();
+    const g = BED_GAIN[Math.min(live.length, BED_GAIN.length) - 1] ?? 0.65;
+    for (const a of live) fadeAudio(a, Math.min(1, a._vcBase * g), ms);
+}
 function playBed(url, line) {
+    const key = line?.audioKey || url;
+    // the same loop again → it is already playing, keep it going
+    if (activeBeds().some(a => a._vcKey === key)) return;
     const master = Number(getSettings().volume);
-    const target = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.3));
     const audio = new Audio(url);
+    audio._vcKey = key;
+    audio._vcBase = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.3));
     audio.volume = 0;
     const done = () => { clearInterval(audio._vcFade); bedAudios.delete(audio); };
     audio.onerror = done;
     audio.loop = true;
-    // a new bed sound takes over from the one before (crossfade), so loops never pile up
-    for (const old of bedAudios) if (old.loop) stopBed(old, 800);
+    // too many loops → the oldest one fades out
+    const live = activeBeds();
+    if (live.length >= BED_MAX) stopBed(live[0], 800);
     bedAudios.add(audio);
-    audio.play().then(() => fadeAudio(audio, target, 400)).catch(done);
+    audio.play().then(() => balanceBeds()).catch(done);
 }
 function stopBed(audio, ms) {
+    audio._vcStopping = true;
     fadeAudio(audio, 0, ms, () => { audio.pause(); bedAudios.delete(audio); });
+    balanceBeds(ms);
 }
 function stopAllBeds(ms = 0) {
     for (const a of [...bedAudios]) {
