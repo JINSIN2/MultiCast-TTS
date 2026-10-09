@@ -736,3 +736,37 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 #voice_cast_settings .vc_custom_sfx_del:hover {
     opacity: 1;
 }
+
+/* 요술봉 빠른 메뉴 */
+.vc_quick_menu {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: min(320px, 80vw);
+}
+.vc_quick_menu .vc_quick_row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+    margin: 0;
+    padding: 8px 10px;
+    justify-content: flex-start;
+    text-align: left;
+}
+.vc_quick_menu .vc_quick_row i {
+    width: 1.2em;
+    text-align: center;
+}
+.vc_quick_menu .vc_quick_hint {
+    flex-basis: 100%;
+    margin-left: calc(1.2em + 8px);
+    opacity: 0.6;
+    font-size: 0.8em;
+}
+
+/* 대사 꾹 눌러서 듣기: no iOS callout / long-press menu on chat text */
+body.vc_hold_on #chat .mes_text {
+    -webkit-touch-callout: none;
+}

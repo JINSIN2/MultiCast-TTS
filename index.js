@@ -35,7 +35,9 @@ const defaultSettings = Object.freeze({
     profileId: '',
     maxTokens: 4096,
     contextChars: 1500,
-    fastClassify: false,     // BETA: number the quotes locally, the AI only answers who/how per number
+    fastClassify: true,      // number the quotes locally; the AI only answers who/how per number
+    inlineTags: false,       // BETA: the RP model marks each line with <v n="who" e="how"> — no classifier call at all
+    holdToPlay: false,       // press and hold a line of dialogue to hear it (a short tap stays free for translators)
     soloBots: {},            // { botKey: true } — 1인 모드: no AI classification, every quote is the bot's line
     extraInstructions: '',
     pacing: 'off',           // 'off' | 'natural' | 'slow' — breathing room between lines
@@ -103,6 +105,11 @@ function getSettings() {
         s.player = true;
         s._migratedPlayerDefaultOn = true;
     }
+    // 2.6.3: 빠른 분류 left BETA and is on by default — switch it on once for existing installs too.
+    if (!s._migratedFastClassifyOn) {
+        s.fastClassify = true;
+        s._migratedFastClassifyOn = true;
+    }
     // Preserve the previously visible buttons once; future visibility is independent of listening mode.
     if (!s._migratedIndependentLineButtons) {
         if (s.readMode === 'all' || s.readMode === 'tap') s.lineButtons = true;
@@ -169,6 +176,7 @@ function cleanMessageText(text) {
     return String(text)
         .replace(/```[\s\S]*?```/g, ' ')          // code blocks
         .replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ')
+        .replace(/<\/?v\b[^>]*>/gi, '')            // voice tags vanish without a trace (same text before and after they're stripped)
         .replace(/<[^>]+>/g, ' ')                  // html tags
         .replace(/[ \t]+/g, ' ')
         .trim();
@@ -698,6 +706,7 @@ function setSolo(on) {
     else delete s.soloBots[bot.key];
     save();
     updateSoloUI();
+    updateInlinePrompt();
     refreshLineButtons({ rebuild: true });
     toastr.info(on ? `${bot.name}: 1인 모드 켬 (분류 없이 바로 읽어요)` : `${bot.name}: 1인 모드 끔 (AI가 분류해요)`, 'MultiCast TTS', { timeOut: 2000 });
 }
@@ -823,6 +832,132 @@ function parseFastOutput(raw, segs) {
     return script;
 }
 
+// ---------------------------------------------------------------------------
+// 답변에 화자 표시 받기 (BETA): the RP model writes <v n="Name" e="emotion">"line"</v>
+// ---------------------------------------------------------------------------
+
+const INLINE_PROMPT_KEY = 'voice_cast_inline_tags';
+
+function inlineTagsActive() {
+    const s = getSettings();
+    return !!(s.enabled && s.inlineTags && !soloOn());
+}
+
+function inlineTagInstruction() {
+    const s = getSettings();
+    return [
+        '[Voice tags for text-to-speech — follow silently]',
+        'Wrap EVERY spoken line of dialogue in a voice tag, keeping the quotes inside it:',
+        '<v n="Name" e="emotion">"the spoken line"</v>',
+        '- n = the exact name of who speaks (unnamed side characters: a short English label like waiter).',
+        '- e = ONE short English word for HOW it is said (e.g. calm, warm, teasing, nervous, irritated, angry, whispering, laughing); leave it empty when neutral.',
+        ...(s.includeThoughts ? ['- A character\'s inner thought written in *asterisks* gets t="1": <v n="Name" e="wistful" t="1">*the thought*</v>. Never tag narration or actions.'] : ['- Never tag narration, actions, or thoughts.']),
+        '- One tag per quote. Write everything else exactly as you normally would. The tags are hidden from the reader; never mention them.',
+    ].join('\n');
+}
+
+/** Keep the instruction in (or out of) the prompt to match the setting and the current bot. */
+function updateInlinePrompt() {
+    const ctx = SillyTavern.getContext();
+    if (typeof ctx.setExtensionPrompt !== 'function') return;
+    // position 1 = in chat, depth 0 = right at the end (best followed), role 0 = system
+    try {
+        ctx.setExtensionPrompt(INLINE_PROMPT_KEY, inlineTagsActive() ? inlineTagInstruction() : '', 1, 0, false, 0);
+    } catch (e) {
+        console.warn(LOG, 'could not set the voice-tag prompt', e);
+    }
+}
+
+const VOICE_TAG_RE = /<v\b([^>]*)>([\s\S]*?)<\/v\s*>/gi;
+
+function voiceTagAttr(attrs, name) {
+    const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs);
+    return (m?.[1] ?? m?.[2] ?? m?.[3] ?? '').trim();
+}
+
+/** Lines from <v> tags in a raw message, in order: { speaker, tag, thought, text }. */
+function parseVoiceTags(raw) {
+    const out = [];
+    for (const m of String(raw ?? '').matchAll(VOICE_TAG_RE)) {
+        const inner = cleanMessageText(m[2]).replace(/^[\s"\u201C\u300C\u300E*]+|[\s"\u201D\u300D\u300F*]+$/g, '').trim();
+        if (!/\p{L}/u.test(inner)) continue;
+        out.push({
+            speaker: voiceTagAttr(m[1], 'n') || 'unknown',
+            tag: voiceTagAttr(m[1], 'e').replace(/[[\]]/g, ''),
+            thought: /^(1|true|yes)$/i.test(voiceTagAttr(m[1], 't')),
+            text: inner,
+        });
+    }
+    return out;
+}
+
+/**
+ * A script from the model's own voice tags, or null when they're missing or don't cover the quotes
+ * (then the classifier runs as usual). With a translation on screen, speakers carry over by order.
+ */
+/** Formatting tags that wrap story text (kept); any other paired tag is a side block (<choices>, status, variables…). */
+const STORY_TAGS = new Set(['v', 'span', 'font', 'b', 'i', 'em', 'strong', 'u', 's', 'del', 'p', 'q', 'small', 'big', 'mark', 'sub', 'sup', 'br', 'center']);
+
+/** The story text only: drops side blocks like <choices>…</choices> or <UpdateVariable>…</UpdateVariable>. */
+function stripSideBlocks(raw) {
+    let out = String(raw ?? '');
+    for (let pass = 0; pass < 5; pass++) {
+        const next = out.replace(/<([a-zA-Z][\w:-]*)\b[^>]*>[\s\S]*?<\/\1\s*>/g, (m, name) => (STORY_TAGS.has(name.toLowerCase()) ? m : ' '));
+        if (next === out) break;
+        out = next;
+    }
+    return out;
+}
+
+/**
+ * A script from the model's own voice tags, or null when they're missing or don't cover the story's quotes
+ * (then the classifier runs as usual). With a translation on screen, speakers carry over by order.
+ * Quotes inside side blocks (choices, status windows) don't count — they aren't spoken lines.
+ */
+function scriptFromVoiceTags(message, text) {
+    const tagged = parseVoiceTags(stripSideBlocks(message?.mes));
+    if (!tagged.length) return null;
+    const speech = tagged.filter(t => !t.thought);
+    const flat = t => normForMatch(t).replace(/\s+/g, '');
+    const shownIsOriginal = flat(cleanMessageText(String(message.mes).replace(VOICE_TAG_RE, '$2'))) === flat(text);
+    let shownRaw = message.mes;
+    if (!shownIsOriginal) {
+        const shown = getShownTranslation(message);
+        const pairs = bilingualParts(shown);
+        shownRaw = pairs ? pairs.trans.join('\n') : (shown || text);
+    }
+    const quotes = quoteSegments(cleanMessageText(stripSideBlocks(shownRaw)));
+    const toLine = (t, lineText) => {
+        const g = findCastEntry(t.speaker)?.gender;
+        return {
+            speaker: t.speaker,
+            gender: g === 'm' || g === 'f' ? g : 'u',
+            type: t.thought ? 'thought' : 'speech',
+            tag: t.tag,
+            text: lineText,
+        };
+    };
+    if (shownIsOriginal) {
+        // every quote in the story should have been tagged
+        if (speech.length < quotes.length) return null;
+        return tagged.filter(t => !t.thought || getSettings().includeThoughts).map(t => toLine(t, t.text));
+    }
+    // reading a translation: same number of quotes → the n-th tag belongs to the n-th translated quote
+    if (speech.length !== quotes.length || !quotes.length) return null;
+    return speech.map((t, i) => toLine(t, quotes[i].text));
+}
+
+/** Some setups show tags as text instead of hiding them — strip any visible <v ...> / </v>. */
+function hideVoiceTagText(root) {
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const hits = [];
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (/<\/?v\b[^<>]*>/i.test(n.nodeValue ?? '')) hits.push(n);
+    }
+    for (const n of hits) n.nodeValue = n.nodeValue.replace(/<\/?v\b[^<>]*>/gi, '');
+}
+
 async function runFastClassifier(text, segs, prevText, userName) {
     const s = getSettings();
     const ctx = SillyTavern.getContext();
@@ -858,6 +993,8 @@ async function getScript(messageId, { force = false } = {}) {
     const p = getScriptInner(messageId, { force }).finally(() => {
         if (scriptInflight.get(inflightKey) === p) scriptInflight.delete(inflightKey);
     });
+    // the script is ready → its ▶ buttons show up right away
+    p.then(() => setTimeout(() => redecorateMessage(messageId), 0)).catch(() => {});
     scriptInflight.set(inflightKey, p);
     return p;
 }
@@ -899,8 +1036,14 @@ async function getScriptInner(messageId, { force = false } = {}) {
     }
 
     let script = null;
+    let fromTags = false;
+    // 답변에 화자 표시: the model already said who speaks — no classifier call at all
+    if (s.inlineTags && !message.is_user && s.voiceLang !== 'translate') {
+        script = scriptFromVoiceTags(message, text);
+        fromTags = !!script;
+    }
     // 빠른 분류: lines are quotes (+ *asterisk* pieces when inner thoughts are on); not with AI translation
-    if (s.fastClassify && s.voiceLang !== 'translate') {
+    if (!script && s.fastClassify && s.voiceLang !== 'translate') {
         const segs = quoteSegments(text, { stars: !!s.includeThoughts });
         if (segs.length) {
             try {
@@ -914,8 +1057,20 @@ async function getScriptInner(messageId, { force = false } = {}) {
     script ??= await runClassifier(text, prevText, userNameFor(messageId));
 
     setStoredEntry(message, { hash: key, textHash, script, edited: false });
+    // the tags did their job → take them out of the message so the chat file and every later prompt stay as light as before
+    if (fromTags) stripVoiceTagsFromMessage(message);
     await ctx.saveChat();
     return script;
+}
+
+function stripVoiceTagsFromMessage(message) {
+    const strip = t => String(t).replace(VOICE_TAG_RE, '$2');
+    const before = message.mes;
+    message.mes = strip(before);
+    // the open swipe keeps its own copy of the text
+    if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id) && message.swipes[message.swipe_id] === before) {
+        message.swipes[message.swipe_id] = message.mes;
+    }
 }
 
 /**
@@ -2434,7 +2589,103 @@ function readMode() {
 }
 
 function lineButtonsOn() {
-    return !!getSettings().lineButtons || readMode() !== 'off';
+    const s = getSettings();
+    // read mode shows ▶ unless the user hears lines by holding them instead
+    return !!s.lineButtons || (readMode() !== 'off' && !s.holdToPlay);
+}
+
+// --- 대사 꾹 눌러서 듣기 ---
+
+const HOLD_MS = 450; // a bit under the phone's own long-press menu
+const HOLD_SLOP = 10; // px the finger may wander before the hold is cancelled
+let holdState = null;
+let suppressClickUntil = 0;
+
+function caretAt(x, y) {
+    if (document.caretRangeFromPoint) {
+        const r = document.caretRangeFromPoint(x, y);
+        return r ? { node: r.startContainer, offset: r.startOffset } : null;
+    }
+    if (document.caretPositionFromPoint) {
+        const p = document.caretPositionFromPoint(x, y);
+        return p ? { node: p.offsetNode, offset: p.offset } : null;
+    }
+    return null;
+}
+
+/** Which script line was held: the line whose text range contains the press point. */
+function lineIndexAt(messageId, root, script, point) {
+    let cursor = 0;
+    for (let index = 0; index < script.length; index++) {
+        const line = script[index];
+        if (!line) continue;
+        let ranges = [];
+        try { ranges = findLineRanges(root, messageId, line.orig ?? line.text, cursor); } catch { ranges = []; }
+        if (ranges[0]?.vcEnd) cursor = ranges[0].vcEnd;
+        for (const r of ranges) {
+            try { if (r.comparePoint(point.node, point.offset) === 0) return index; } catch { /* other tree */ }
+        }
+    }
+    return -1;
+}
+
+async function playHeldLine(mesEl, point) {
+    const messageId = Number(mesEl.getAttribute('mesid'));
+    const root = mesEl.querySelector('.mes_text');
+    const message = SillyTavern.getContext().chat?.[messageId];
+    if (Number.isNaN(messageId) || !root || !message || message.is_system) return;
+    let script = getStoredEntry(message)?.script;
+    if (!Array.isArray(script)) {
+        toastr.info('대사 분류 중...', 'MultiCast TTS', { timeOut: 1500 });
+        try { script = await getScript(messageId); } catch (e) {
+            toastr.error(String(e.message ?? e), 'MultiCast TTS');
+            return;
+        }
+    }
+    const index = lineIndexAt(messageId, root, script, point);
+    if (index < 0) return; // held narration, not a line
+    navigator.vibrate?.(15);
+    playScriptLine(messageId, index);
+}
+
+function setupHoldToPlay() {
+    const cancel = () => {
+        if (holdState) clearTimeout(holdState.timer);
+        holdState = null;
+    };
+    document.addEventListener('pointerdown', (e) => {
+        if (!getSettings().enabled || !getSettings().holdToPlay) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        const textEl = e.target?.closest?.('#chat .mes .mes_text');
+        if (!textEl || e.target.closest(`.${LINE_BTN}, a, button, input, textarea`)) return;
+        cancel();
+        const mesEl = textEl.closest('.mes');
+        const x = e.clientX, y = e.clientY;
+        holdState = {
+            x, y,
+            timer: setTimeout(() => {
+                holdState = null;
+                const point = caretAt(x, y);
+                if (!point) return;
+                suppressClickUntil = Date.now() + 700; // the release must not also toggle a translation
+                window.getSelection?.()?.removeAllRanges?.();
+                playHeldLine(mesEl, point);
+            }, HOLD_MS),
+        };
+    }, true);
+    document.addEventListener('pointermove', (e) => {
+        if (holdState && Math.hypot(e.clientX - holdState.x, e.clientY - holdState.y) > HOLD_SLOP) cancel();
+    }, true);
+    for (const ev of ['pointerup', 'pointercancel', 'scroll', 'wheel']) document.addEventListener(ev, () => { if (holdState) cancel(); }, true);
+    const swallow = (e) => {
+        if (Date.now() < suppressClickUntil) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.type === 'click') suppressClickUntil = 0;
+        }
+    };
+    window.addEventListener('click', swallow, true);
+    window.addEventListener('contextmenu', swallow, true);
 }
 let linePlay = null; // { messageId, index }
 
@@ -2460,8 +2711,8 @@ function decorateMessage(messageId) {
     if (!message || message.is_system) return;
     const script = getStoredEntry(message)?.script;
     if (!Array.isArray(script)) return;
-    // read mode: every line that will be voiced gets a ▶ (hollow = not made yet, made on tap)
-    const tappable = readMode() !== 'off' ? new Set(buildPlayableLines(script).map(l => l.src)) : new Set();
+    // once a script exists, every line that will be voiced gets a ▶ (hollow = not made yet, made on tap)
+    const tappable = new Set(buildPlayableLines(script).map(l => l.src));
     if (!script.some(l => l?.audioKey || tappable.has(l))) return;
     let cursor = 0;
     script.forEach((line, index) => {
@@ -2571,14 +2822,18 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
     if (Array.isArray(storedScript)) fixUserSpeaker(storedScript, messageId);
     const line = storedScript?.[index];
     if (!line) return;
+    // show which line was picked right away (the voice may still need a few seconds to be made)
+    const pickRoot = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
+    highlightLine(messageId, line.orig ?? line.text, line, pickRoot ? cursorBefore(pickRoot, messageId, storedScript, index) : 0);
     let url = line.audioKey ? await getCachedAudio(line.audioKey) : null;
     if (mySession !== session || generationAtStart !== generationEpoch) return;
-    if (!url && (readMode() !== 'off' || (getSettings().continuePlay && getSettings().continueMode === 'all'))) {
+    if (!url) {
         // read mode (or 이어 듣기 '전부'): make just this line now
         const localSfx = localSfxFor(line);
         const voiceId = pickVoice(line) || (localSfx ? 'local-sfx' : '');
         if (!voiceId) {
             toastr.warning('이 대사에 쓸 목소리가 없어요. 캐스트나 기본 목소리를 지정해 주세요.', 'MultiCast TTS');
+            clearHighlight();
             return;
         }
         const $btn = $(`#chat .mes[mesid="${messageId}"] .${LINE_BTN}[data-line="${index}"]`);
@@ -2593,9 +2848,11 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
             toastr.error(String(e.message ?? e), 'MultiCast TTS');
         }
         redecorateMessage(messageId);
+        if (!url) clearHighlight();
         if (mySession !== session || generationAtStart !== generationEpoch || !url) return;
     }
     if (!url) {
+        clearHighlight();
         toastr.info('이 기기에는 이 대사 음성이 없어요. 🔊로 메시지를 재생하면 다시 만들어져요.', 'MultiCast TTS');
         return;
     }
@@ -3097,10 +3354,22 @@ async function reclassifyAndPlay(messageId) {
 // Auto play
 // ---------------------------------------------------------------------------
 
+/** A script that costs nothing (no AI call): 1인 모드, or voice tags the RP model already wrote. */
+function prepareFreeScript(messageId) {
+    const s = getSettings();
+    const message = SillyTavern.getContext().chat?.[messageId];
+    if (!message || message.is_user || message.is_system || s.voiceLang === 'translate') return;
+    const free = soloOn() || (s.inlineTags && !!scriptFromVoiceTags(message, getMessageText(message)));
+    if (free) getScript(messageId).catch(e => console.debug(LOG, 'free script failed', e));
+}
+
 async function onCharacterMessageRendered(messageId, type) {
+    hideVoiceTagText(document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`));
     const token = generationEpoch;
     if (generationPaused) return;
     const s = getSettings();
+    // free scripts (1인 모드 · the model's own voice tags) are made on arrival so the ▶ buttons are there to tap
+    if (s.enabled && type !== 'first_message') prepareFreeScript(messageId);
     if (!s.enabled || (!s.autoPlay && !s.pregenerate && readMode() === 'off')) return;
     if (type === 'first_message') return;
 
@@ -3667,13 +3936,16 @@ async function openScriptEditor(messageId) {
     if (!voiceList.length) await loadVoices(false).catch(() => {});
 
     let script;
+    // a stored script opens at once; if it has to be (re)classified, say so instead of looking frozen
+    const slowNote = setTimeout(() => toastr.info('대사 분류 중...', 'MultiCast TTS', { timeOut: 2500 }), 300);
     try {
-        if (!getStoredEntry(ctx.chat[messageId])) toastr.info('대사 분류 중...', 'MultiCast TTS', { timeOut: 1500 });
         script = await getScript(messageId);
     } catch (e) {
         console.error(LOG, e);
         toastr.error(String(e.message ?? e), 'MultiCast TTS');
         script = [];
+    } finally {
+        clearTimeout(slowNote);
     }
 
     // loop so "re-classify" can reopen the editor with fresh results
@@ -3839,37 +4111,43 @@ function addWandItem() {
     if ($('#voice_cast_wand').length) return;
     const $menu = $('#extensionsMenu');
     if (!$menu.length) return;
+    // one entry only — the quick toggles live in a small popup so the wand menu stays short
     const $item = $(`
-        <div id="voice_cast_wand" class="list-group-item flex-container flexGap5" title="눌러서 음성 언어 바꾸기 (화면대로 → 원문 → AI 번역)">
-            <div class="extensionsMenuExtensionButton fa-solid fa-language"></div>
-            <span id="voice_cast_wand_label"></span>
+        <div id="voice_cast_wand" class="list-group-item flex-container flexGap5" title="MultiCast TTS 빠른 메뉴 (음성 언어 · 1인 모드 · 효과음 · 저장된 음성)">
+            <div class="extensionsMenuExtensionButton fa-solid fa-headphones"></div>
+            <span>MultiCast TTS</span>
         </div>`);
-    $item.on('click', cycleVoiceLang);
+    $item.on('click', openQuickMenu);
     $menu.append($item);
-    const $list = $(`
-        <div id="voice_cast_wand_list" class="list-group-item flex-container flexGap5" title="이 채팅에서 만든 대사 음성 모아보기">
-            <div class="extensionsMenuExtensionButton fa-solid fa-list"></div>
-            <span>MultiCast TTS: 저장된 대사 음성</span>
-        </div>`);
-    $list.on('click', openSavedList);
-    $menu.append($list);
-    const $sfx = $(`
-        <div id="voice_cast_wand_sfx" class="list-group-item flex-container flexGap5" title="효과음 켜기/끄기">
-            <div class="extensionsMenuExtensionButton fa-solid fa-bell"></div>
-            <span id="voice_cast_wand_sfx_label"></span>
-        </div>`);
-    $sfx.on('click', () => setSfx(!getSettings().sfxEnabled));
-    $menu.append($sfx);
-    const $solo = $(`
-        <div id="voice_cast_wand_solo" class="list-group-item flex-container flexGap5" title="이 봇은 AI 분류 없이 바로 읽기 (1인봇용)">
-            <div class="extensionsMenuExtensionButton fa-solid fa-user"></div>
-            <span id="voice_cast_wand_solo_label"></span>
-        </div>`);
-    $solo.on('click', () => setSolo(!soloOn()));
-    $menu.append($solo);
     updateSoloUI();
-    updateWandItem();
-    updateWandItem();
+    updateInlinePrompt();
+}
+
+async function openQuickMenu() {
+    const ctx = SillyTavern.getContext();
+    const $box = $('<div class="vc_quick_menu"></div>');
+    let popup = null;
+    const rows = [
+        { id: 'lang', icon: 'fa-language', label: () => `음성 언어: ${voiceLangLabel()}`, hint: '누를 때마다 화면대로 → 원문 → AI 번역', run: () => cycleVoiceLang() },
+        { id: 'solo', icon: 'fa-user', label: () => `1인 모드 (이 봇): ${soloOn() ? '켜짐' : '꺼짐'}`, hint: 'AI 분류 없이 바로 읽기', run: () => setSolo(!soloOn()) },
+        { id: 'sfx', icon: 'fa-bell', label: () => `효과음: ${getSettings().sfxEnabled ? '켜짐' : '꺼짐'}`, hint: '', run: () => setSfx(!getSettings().sfxEnabled) },
+        { id: 'saved', icon: 'fa-list', label: () => '저장된 대사 음성 보기', hint: '', run: () => { popup?.completeCancelled?.(); setTimeout(openSavedList, 50); } },
+    ];
+    const render = () => {
+        $box.empty();
+        for (const r of rows) {
+            const $r = $(`<div class="vc_quick_row menu_button" data-id="${r.id}">
+                <i class="fa-solid ${r.icon}"></i><span class="vc_quick_label"></span>${r.hint ? '<small class="vc_quick_hint"></small>' : ''}
+            </div>`);
+            $r.find('.vc_quick_label').text(r.label());
+            if (r.hint) $r.find('.vc_quick_hint').text(r.hint);
+            $r.on('click', () => { r.run(); render(); });
+            $box.append($r);
+        }
+    };
+    render();
+    popup = new ctx.Popup($box, ctx.POPUP_TYPE.TEXT, '', { okButton: '닫기', leftAlign: true });
+    await popup.show();
 }
 
 function settingsHtml() {
@@ -3900,7 +4178,9 @@ function settingsHtml() {
                     </select>
                     <div id="voice_cast_listening_hint" class="vc_hint"></div>
                     <label class="checkbox_label"><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기</span></label>
-                    <div class="vc_hint vc_sub">저장된 음성이 있는 대사에 ▶가 생겨요. '읽다가 대사만 듣기'에서는 끄더라도 항상 보여요. 이어듣기를 켜면 ▶부터 쭉 이어서 들어요.</div>
+                    <div class="vc_hint vc_sub">대본이 준비된 대사마다 ▶가 생겨요. 꽉 찬 ▶는 바로 재생, 빈 ▶는 누를 때 그 줄만 만들어요. '읽다가 대사만 듣기'에서는 끄더라도 보여요 (꾹 눌러서 듣기를 켜면 숨겨져요). 이어듣기를 켜면 ▶부터 쭉 이어서 들어요.</div>
+                    <label class="checkbox_label"><input id="voice_cast_hold" type="checkbox" /><span>대사 꾹 눌러서 듣기</span></label>
+                    <div class="vc_hint vc_sub">대사를 0.5초 누르고 있으면 그 줄을 들어요. 짧게 탭하는 건 번역기(원문 보기)에 그대로 양보해요. ▶ 버튼을 끄고 이것만 써도 돼요 (그럼 '읽다가 대사만 듣기'에서도 ▶가 안 떠요).</div>
                     <div id="voice_cast_precreate_options">
                         <label class="checkbox_label"><input id="voice_cast_precreate" type="checkbox" /><span>새 답변 음성을 미리 만들어두기</span></label>
                         <div class="vc_hint vc_sub">누르면 바로 들을 수 있지만, 듣지 않은 대사도 생성 크레딧을 써요.</div>
@@ -4049,7 +4329,9 @@ function settingsHtml() {
                 <select id="voice_cast_profile" class="text_pole"></select>
                 <label class="checkbox_label"><input id="voice_cast_solo" type="checkbox" /><span id="voice_cast_solo_label">이 봇은 1인 모드</span></label>
                 <div class="vc_hint vc_sub">👤 AI 분류 없이 따옴표 대사를 전부 이 봇 목소리로 바로 읽어요 (내 메시지는 내 목소리). 기다림·비용 0. 감정 태그와 효과음은 빠지고, 조연 대사도 봇 목소리로 나와요. 봇마다 따로 기억해요.</div>
-                <label class="checkbox_label"><input id="voice_cast_fast" type="checkbox" /><span>⚡ 빠른 분류 <span class="vc_beta">BETA</span></span></label>
+                <label class="checkbox_label"><input id="voice_cast_inline" type="checkbox" /><span>✨ 답변에 화자 표시 받기 <span class="vc_beta">BETA</span></span></label>
+                <div class="vc_hint vc_sub">RP 모델이 답변을 쓸 때 대사마다 숨은 표시(누가·어떤 감정)를 같이 달게 해요. 분류 AI를 안 불러서 기다림·비용 0. 표시는 화면에서 숨겨져요. 모델이 표시를 빼먹으면 아래 빠른 분류(또는 원래 방식)로 해요. 켠 뒤 새로 받는 답변부터 적용돼요.</div>
+                <label class="checkbox_label"><input id="voice_cast_fast" type="checkbox" /><span>⚡ 빠른 분류</span></label>
                 <div class="vc_hint vc_sub">따옴표 대사를 확장이 먼저 뽑고, AI는 누가·어떤 감정인지만 짧게 답해요. 훨씬 빨라요. 속마음 읽기를 켜면 *별표* 구간도 AI가 속마음인지 지문인지 골라요. 따옴표·별표가 없거나 'AI 번역해서 읽기'를 켜면 원래 방식으로 해요.</div>
                 <div class="vc_row">
                     <label for="voice_cast_max_tokens">최대 응답 토큰</label>
@@ -4186,6 +4468,9 @@ function bindSettingsUI() {
     bindCheck('#voice_cast_player', 'player');
     $('#voice_cast_player').on('change', applyPlayerSetting);
     bindCheck('#voice_cast_line_btns', 'lineButtons');
+    bindCheck('#voice_cast_hold', 'holdToPlay');
+    $('#voice_cast_hold').on('change', () => { refreshLineButtons({ rebuild: true }); $('body').toggleClass('vc_hold_on', !!getSettings().holdToPlay); });
+    $('body').toggleClass('vc_hold_on', !!s.holdToPlay);
     $('#voice_cast_line_btns').on('change', () => refreshLineButtons());
     $('#voice_cast_saved_list').on('click', openSavedList);
     $('#voice_cast_quick').on('change', applyQuickButtons);
@@ -4231,6 +4516,8 @@ function bindSettingsUI() {
     bindNumber('#voice_cast_max_tokens', 'maxTokens');
     bindNumber('#voice_cast_context_chars', 'contextChars');
     bindCheck('#voice_cast_fast', 'fastClassify');
+    bindCheck('#voice_cast_inline', 'inlineTags');
+    $('#voice_cast_inline, #voice_cast_enabled, #voice_cast_thoughts').on('change', () => setTimeout(updateInlinePrompt, 0));
     $('#voice_cast_solo').on('change', function () { setSolo(!!this.checked); });
     updateSoloUI();
     bindNumber('#voice_cast_concurrency', 'concurrency');
@@ -4609,6 +4896,7 @@ jQuery(async () => {
     loadIndex(); // so ⏮/⏭ know right away which messages already have audio
     watchChatForLineButtons();
     refreshLineButtons();
+    setupHoldToPlay();
     // capture phase: a ▶ inside a translator's <summary> must not fold/unfold it
     document.addEventListener('click', (e) => {
         const btn = e.target?.closest?.(`.${LINE_BTN}`);
@@ -4630,6 +4918,8 @@ jQuery(async () => {
         ensureBotCast();
         renderCastList();
         updateSoloUI();
+        updateInlinePrompt();
+        setTimeout(() => document.querySelectorAll('#chat .mes .mes_text').forEach(hideVoiceTagText), 300);
         // the bot's linked persona can be applied right after this event
         setTimeout(() => { ensureBotCast(); renderCastList(); renderListenList(); }, 800);
     });
