@@ -3669,7 +3669,147 @@ function safeFileName(str) {
     return String(str ?? '').replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'voice';
 }
 
-async function downloadMessageAudio(messageId, scriptOverride = null) {
+/**
+ * Render a message the way it plays: breathing pauses, sound effects layered under the voices
+ * (겹쳐 재생), 🔁 sounds looping until the message ends (max 3, softer when stacked), cast volumes.
+ * Returns { blob (wav), seconds, count } or null when the browser can't do it.
+ */
+async function mixMessageAudio(lines, urls, messageId) {
+    const OAC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
+    if (!OAC) return null;
+    const SR = 44100;
+    const decoder = new OAC(1, SR, SR);
+    const bufs = [];
+    for (const url of urls) {
+        if (!url) { bufs.push(null); continue; }
+        try {
+            bufs.push(await decoder.decodeAudioData(await (await fetch(url)).arrayBuffer()));
+        } catch (e) {
+            console.warn(LOG, 'mixdown: could not decode a line', e);
+            bufs.push(null);
+        }
+    }
+    if (!bufs.some(Boolean)) return null;
+
+    const root = messageId !== null ? document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`) : null;
+    const s = getSettings();
+    const voices = [];  // { buf, at, gain }
+    const beds = [];    // { buf, start, end, base, key }
+    let t = 0.05;
+    let prev = null;
+    let cursor = 0;
+    let count = 0;
+    let rateIgnored = (Number(s.rate) || 1) !== 1;
+    for (let i = 0; i < lines.length; i++) {
+        const buf = bufs[i];
+        if (!buf) continue;
+        const src = lines[i].src;
+        count++;
+        if (src.type === 'sfx' && isLoopSfxKey(src.audioKey)) {
+            const key = src.audioKey;
+            if (beds.some(b => b.key === key && b.end === null)) continue; // same loop already going
+            const live = beds.filter(b => b.end === null);
+            if (live.length >= BED_MAX) { live[0].end = t; live[0].fade = 0.8; }
+            beds.push({ buf, start: t, end: null, base: castVolumeFor(src) * 0.3, key });
+            continue;
+        }
+        if (src.type === 'sfx' && s.sfxOverlay) {
+            voices.push({ buf, at: t, gain: castVolumeFor(src) * 0.85 });
+            continue;
+        }
+        const text = src.orig ?? src.text;
+        let range = null;
+        if (root) {
+            try { range = findLineRanges(root, messageId, text, cursor)[0] ?? null; } catch { range = null; }
+        }
+        if (prev && pacingProfile()) {
+            const narr = range?.vcStart !== undefined && range.vcStart >= cursor ? range.vcStart - cursor : 0;
+            t += pauseBefore(prev, src, narr) / 1000;
+        }
+        if (range?.vcEnd) cursor = range.vcEnd;
+        const own = Number(findCastEntry(src.speaker)?.rate);
+        if (own > 0 && own !== 1) rateIgnored = true;
+        voices.push({ buf, at: t, gain: castVolumeFor(src) });
+        t += buf.duration;
+        prev = src;
+    }
+    const end = t;
+    for (const b of beds) {
+        if (b.end === null) { b.end = end; b.fade = 1.8; }
+    }
+    const tail = Math.max(end, ...voices.map(v => v.at + v.buf.duration), ...beds.map(b => b.end + b.fade));
+    const ctx = new OAC(1, Math.ceil((tail + 0.2) * SR), SR);
+    for (const v of voices) {
+        const node = ctx.createBufferSource();
+        node.buffer = v.buf;
+        const g = ctx.createGain();
+        g.gain.value = v.gain;
+        node.connect(g).connect(ctx.destination);
+        node.start(v.at);
+    }
+    // loops: fade in, re-balance whenever another loop starts or stops, fade out at the end
+    const points = [...new Set(beds.flatMap(b => [b.start, b.end]))].sort((a, b) => a - b);
+    for (const b of beds) {
+        const node = ctx.createBufferSource();
+        node.buffer = b.buf;
+        node.loop = true;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, b.start);
+        for (const p of points) {
+            if (p < b.start || p >= b.end) continue;
+            const n = beds.filter(o => o.start <= p && o.end > p).length;
+            g.gain.setTargetAtTime(b.base * (BED_GAIN[Math.min(n, BED_GAIN.length) - 1] ?? 0.65), p, 0.12);
+        }
+        g.gain.setTargetAtTime(0, b.end, b.fade / 4);
+        node.connect(g).connect(ctx.destination);
+        node.start(b.start);
+        node.stop(b.end + b.fade + 0.1);
+    }
+    const out = await ctx.startRendering();
+    return { blob: encodeWavMono(out.getChannelData(0), SR), seconds: out.duration, count, rateIgnored };
+}
+
+/** 16-bit mono WAV; scales down only if the mix would clip. */
+function encodeWavMono(data, sampleRate) {
+    let peak = 0;
+    for (let i = 0; i < data.length; i++) { const a = Math.abs(data[i]); if (a > peak) peak = a; }
+    const k = peak > 0.98 ? 0.98 / peak : 1;
+    const buf = new ArrayBuffer(44 + data.length * 2);
+    const v = new DataView(buf);
+    const str = (o, x) => { for (let i = 0; i < x.length; i++) v.setUint8(o + i, x.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + data.length * 2, true); str(8, 'WAVE');
+    str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, data.length * 2, true);
+    for (let i = 0; i < data.length; i++) {
+        const x = Math.max(-1, Math.min(1, data[i] * k));
+        v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+    }
+    return new Blob([buf], { type: 'audio/wav' });
+}
+
+/** Ask which kind of file: plain mp3 (lines joined) or 들리는 그대로 (wav mix). Returns 'mp3' | 'wav' | null. */
+async function chooseDownloadKind() {
+    const ctx = SillyTavern.getContext();
+    const html = `
+        <div style="text-align:left">
+            <h3 style="margin-top:0">어떤 파일로 받을까요?</h3>
+            <p><b>🎵 mp3로 받기</b><br><span class="vc_hint">대사 음성만 순서대로 이어 붙여요. 파일이 작아서(1분에 1MB쯤) 게시판·커뮤니티에 올리기 좋아요. 대사 사이 쉼은 없고, 효과음은 겹치지 않고 차례로 한 번씩 들어가요.</span></p>
+            <p><b>🎧 들리는 그대로 받기 (wav)</b><br><span class="vc_hint">재생할 때랑 똑같이 쉼·겹친 효과음·🔁 반복·캐스트 볼륨까지 섞어요. 파일이 커서(1분에 5MB쯤) mp3만 받는 사이트엔 못 올릴 수 있어요. 말하기 속도 설정은 반영되지 않아요.</span></p>
+        </div>`;
+    const MP3 = 2;
+    const popup = new ctx.Popup(html, ctx.POPUP_TYPE.TEXT, '', {
+        okButton: '🎧 들리는 그대로 (wav)',
+        cancelButton: '취소',
+        customButtons: [{ text: '🎵 mp3로 받기', result: MP3 }],
+    });
+    const r = await popup.show();
+    if (r === MP3) return 'mp3';
+    if (r === ctx.POPUP_RESULT?.AFFIRMATIVE || r === 1) return 'wav';
+    return null;
+}
+
+async function downloadMessageAudio(messageId, scriptOverride = null, { kind = 'mp3' } = {}) {
     const generationAtStart = generationEpoch;
     const ctx = SillyTavern.getContext();
     const message = ctx.chat[messageId];
@@ -3691,6 +3831,24 @@ async function downloadMessageAudio(messageId, scriptOverride = null) {
         if (!scriptOverride) savePinsWhenDone(done, messageId);
         const urls = await Promise.all(promises);
         if (generationAtStart !== generationEpoch) return;
+        // 들리는 그대로: mix pauses, overlapping / 🔁 looping sound effects and volumes into one file
+        let mixed = null;
+        try {
+            if (kind === 'wav') mixed = await mixMessageAudio(lines, urls, messageId);
+        } catch (e) {
+            console.warn(LOG, 'mixdown failed, saving the plain joined file instead', e);
+        }
+        if (mixed) {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(mixed.blob);
+            a.download = `${safeFileName(message.name)}_${messageId}.wav`;
+            document.body.append(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+            toastr.success(`들리는 그대로 저장했어요 (${mixed.count}/${total}줄, ${Math.round(mixed.seconds)}초).${mixed.rateIgnored ? ' 말하기 속도 설정은 파일에 반영되지 않아요.' : ''}`, 'MultiCast TTS');
+            return;
+        }
         const parts = [];
         for (const url of urls) {
             if (!url) continue;
@@ -4630,12 +4788,13 @@ async function openScriptEditor(messageId) {
             leftAlign: true,
             customButtons: [
                 {
-                    text: 'mp3로 받기',
+                    text: '파일로 받기',
                     icon: 'fa-download',
-                    action: () => {
+                    action: async () => {
                         const current = readEditor($editor);
                         const isChanged = JSON.stringify(current) !== JSON.stringify(script);
-                        downloadMessageAudio(messageId, isChanged ? current : null);
+                        const kind = await chooseDownloadKind();
+                        if (kind) downloadMessageAudio(messageId, isChanged ? current : null, { kind });
                     },
                 },
                 { text: '저장만', result: EDITOR_SAVE_ONLY, icon: 'fa-floppy-disk' },
@@ -5625,13 +5784,15 @@ function registerCommands() {
         aliases: ['multicast-save'],
         callback: async (_args, value) => {
             const chat = SillyTavern.getContext().chat;
-            const raw = String(value ?? '').trim();
-            const id = raw === '' ? chat.length - 1 : Number(raw);
+            const words = String(value ?? '').trim().split(/\s+/).filter(Boolean);
+            const kind = words.some(w => /^(wav|mix|그대로)$/i.test(w)) ? 'wav' : 'mp3';
+            const num = words.find(w => /^\d+$/.test(w));
+            const id = num === undefined ? chat.length - 1 : Number(num);
             if (!Number.isInteger(id) || !chat[id]) return '';
-            await downloadMessageAudio(id);
+            await downloadMessageAudio(id, null, { kind });
             return '';
         },
-        helpString: '<div>메시지 대사 전체를 mp3 한 파일로 저장해요. 예: <code>/voicecast-save</code>, <code>/voicecast-save 12</code></div>',
+        helpString: '<div>메시지 대사 전체를 파일 하나로 저장해요. 기본은 mp3(대사만 이어 붙임), <code>wav</code>를 붙이면 들리는 그대로(쉼·겹친 효과음·🔁 반복 포함). 예: <code>/voicecast-save</code>, <code>/voicecast-save 12</code>, <code>/voicecast-save 12 wav</code></div>',
     }));
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
