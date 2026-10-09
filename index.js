@@ -4148,6 +4148,7 @@ function editorRowHtml() {
                 <span class="vc_e_has fa-solid fa-circle-check" title="이 줄 음성이 이미 만들어져 있어요 (다시 들어도 크레딧 안 씀)" hidden></span>
                 <div class="vc_icon_btn vc_e_play fa-solid fa-play" title="이 줄만 듣기 (저장된 음성이 있으면 그걸 재생)"></div>
                 <div class="vc_icon_btn vc_e_regen fa-solid fa-dice" title="이 줄 음성 새로 뽑기 (크레딧 사용)"></div>
+                <div class="vc_icon_btn vc_e_fav fa-regular fa-star" title="즐겨찾기 (시간이 지나도 안 지워져요)"></div>
                 <div class="vc_icon_btn vc_e_up fa-solid fa-arrow-up" title="위로"></div>
                 <div class="vc_icon_btn vc_e_down fa-solid fa-arrow-down" title="아래로"></div>
                 <div class="vc_icon_btn vc_e_del fa-solid fa-trash-can" title="삭제"></div>
@@ -4184,6 +4185,8 @@ function updateRowBadge($row) {
     const has = !!key && $row.data('sig') === lineSignature(readEditorRow($row)) && (storeIndex === null || keyHasAudio(key));
     const el = $row.find('.vc_e_has')[0];
     if (el) el.hidden = !has;
+    const fav = has && isFav(key);
+    $row.find('.vc_e_fav').toggleClass('vc_on fa-solid', fav).toggleClass('fa-regular', !fav).toggleClass('vc_disabled', !has);
 }
 
 function lineSignature(line) {
@@ -4273,6 +4276,19 @@ function buildEditor(messageId, script) {
     });
     $editor.on('click', '.vc_e_regen', function () {
         previewRow($(this).closest('.vc_edit_row'), true);
+    });
+    $editor.on('click', '.vc_e_fav', async function () {
+        const $row = $(this).closest('.vc_edit_row');
+        const line = readEditorRow($row);
+        if (!line.audioKey) {
+            toastr.info('먼저 ▶로 들어서 음성을 만들어 주세요.', 'MultiCast TTS', { timeOut: 2000 });
+            return;
+        }
+        const on = !isFav(line.audioKey);
+        if (!(await setFav(line.audioKey, on, line))) return;
+        noteClipInfo(line.audioKey, line);
+        updateRowBadge($row);
+        toastr.info(on ? '⭐ 즐겨찾기했어요. 시간이 지나도 안 지워져요.' : '즐겨찾기를 해제했어요.', 'MultiCast TTS', { timeOut: 1500 });
     });
     // editing a line means its old take no longer matches → hide the ✓
     $editor.on('input change', '.vc_edit_row input, .vc_edit_row select, .vc_edit_row textarea', function () {

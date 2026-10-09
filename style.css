@@ -886,3 +886,12 @@ body.vc_hold_on #chat .mes_text {
     margin: 0;
     font-size: 0.85em;
 }
+
+/* 대본 편집기 ☆ */
+.vc_edit_row .vc_e_fav.vc_on {
+    color: var(--active, #e8a33d);
+    opacity: 1;
+}
+.vc_edit_row .vc_e_fav.vc_disabled {
+    opacity: 0.25;
+}
