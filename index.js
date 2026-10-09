@@ -35,6 +35,8 @@ const defaultSettings = Object.freeze({
     profileId: '',
     maxTokens: 4096,
     contextChars: 1500,
+    fastClassify: false,     // BETA: number the quotes locally, the AI only answers who/how per number
+    soloBots: {},            // { botKey: true } — 1인 모드: no AI classification, every quote is the bot's line
     extraInstructions: '',
     pacing: 'off',           // 'off' | 'natural' | 'slow' — breathing room between lines
     continuePlay: false,     // after a message, go on to the next one
@@ -410,8 +412,13 @@ function buildClassifierPrompt(text, prevText, userNameOverride = null) {
     const s = getSettings();
     const ctx = SillyTavern.getContext();
     const userName = userNameOverride || ctx.name1 || 'User';
-    const charName = ctx.name2 || '';
+    const known = knownCharactersList(userName);
+    return buildClassifierPromptFrom(known, userName, text, prevText);
+}
 
+function knownCharactersList(userName) {
+    const ctx = SillyTavern.getContext();
+    const charName = ctx.name2 || '';
     const known = [];
     known.push(`- ${userName} (the user's own character)`);
     if (charName && charName !== userName) known.push(`- ${charName} (main character of this chat)`);
@@ -432,6 +439,11 @@ function buildClassifierPrompt(text, prevText, userNameOverride = null) {
         if (String(entry.actingNote ?? '').trim()) extra.push(`acting note: ${String(entry.actingNote).trim()}`);
         known.push(`- ${names[0]}${names.length > 1 ? ` (aliases: ${names.slice(1).join(', ')})` : ''} — ${g}${extra.length ? `; ${extra.join('; ')}` : ''}`);
     }
+    return known;
+}
+
+function buildClassifierPromptFrom(known, userName, text, prevText) {
+    const s = getSettings();
 
     const translating = s.voiceLang === 'translate';
     const targetLang = String(s.translateTo || 'English').trim() || 'English';
@@ -620,6 +632,10 @@ async function runClassifierOnce(text, prevText, userName = null) {
 }
 
 async function classifierRequest(s, ctx, system, user) {
+    return parseClassifierOutput(await classifierRaw(s, ctx, system, user));
+}
+
+async function classifierRaw(s, ctx, system, user) {
     let raw;
     if (s.profileId) {
         const result = await ctx.ConnectionManagerRequestService.sendRequest(
@@ -639,7 +655,189 @@ async function classifierRequest(s, ctx, system, user) {
         });
     }
     console.debug(LOG, 'classifier raw output:', raw);
-    return parseClassifierOutput(raw);
+    return raw;
+}
+
+// ---------------------------------------------------------------------------
+// Quotes found locally — used by 1인 모드 (no AI) and 빠른 분류 (AI only labels them)
+// ---------------------------------------------------------------------------
+
+const QUOTE_RE = /"([^"\n]+)"|\u201C([^\u201D\n]+)\u201D|\u300C([^\u300D\n]+)\u300D|\u300E([^\u300F\n]+)\u300F/g;
+const QUOTE_OR_STAR_RE = /"([^"\n]+)"|\u201C([^\u201D\n]+)\u201D|\u300C([^\u300D\n]+)\u300D|\u300E([^\u300F\n]+)\u300F|\*([^*\n]+)\*/g;
+
+/**
+ * Every quoted piece with letters in it, in order: { text, start, kind } (start = index of the opening mark).
+ * With `stars`, *asterisk* pieces come too (kind 'star') — they may be inner thoughts or just narration.
+ */
+function quoteSegments(text, { stars = false } = {}) {
+    const out = [];
+    for (const m of String(text ?? '').matchAll(stars ? QUOTE_OR_STAR_RE : QUOTE_RE)) {
+        const isStar = m[5] !== undefined;
+        const inner = (m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? '').trim();
+        if (!/\p{L}/u.test(inner)) continue;
+        out.push({ text: inner, start: m.index, kind: isStar ? 'star' : 'quote' });
+    }
+    return out;
+}
+
+/** 1인 모드 is per bot. */
+function soloOn() {
+    const bot = currentBot();
+    return !!(bot && getSettings().soloBots?.[bot.key]);
+}
+
+function setSolo(on) {
+    const bot = currentBot();
+    if (!bot) {
+        toastr.info('캐릭터 채팅을 먼저 열어주세요.', 'MultiCast TTS');
+        return;
+    }
+    const s = getSettings();
+    s.soloBots ??= {};
+    if (on) s.soloBots[bot.key] = true;
+    else delete s.soloBots[bot.key];
+    save();
+    updateSoloUI();
+    refreshLineButtons({ rebuild: true });
+    toastr.info(on ? `${bot.name}: 1인 모드 켬 (분류 없이 바로 읽어요)` : `${bot.name}: 1인 모드 끔 (AI가 분류해요)`, 'MultiCast TTS', { timeOut: 2000 });
+}
+
+function updateSoloUI() {
+    const on = soloOn();
+    const bot = currentBot();
+    $('#voice_cast_solo').prop('checked', on).prop('disabled', !bot);
+    $('#voice_cast_solo_label').text(bot ? `이 봇(${bot.name})은 1인 모드` : '이 봇은 1인 모드 (채팅을 열면 고를 수 있어요)');
+    $('#voice_cast_wand_solo_label').text(`MultiCast TTS: 1인 모드 ${on ? '켜짐' : '꺼짐'}`);
+}
+
+/** 1인 모드: every quote belongs to whoever wrote the message — no AI call, no wait. */
+function soloScript(message, messageId, text) {
+    const ctx = SillyTavern.getContext();
+    const speaker = message.is_user ? userNameFor(messageId) : (message.name || ctx.name2 || 'unknown');
+    const g = findCastEntry(speaker)?.gender;
+    const gender = g === 'm' || g === 'f' ? g : 'u';
+    return quoteSegments(text).map(q => ({ speaker, gender, type: 'speech', tag: '', text: q.text }));
+}
+
+/** 빠른 분류: the message with ⟦n⟧ before every quote; the AI answers one short line per number. */
+function buildFastPrompt(text, segs, prevText, userName) {
+    const s = getSettings();
+    const known = knownCharactersList(userName);
+    let marked = String(text);
+    for (let i = segs.length - 1; i >= 0; i--) {
+        marked = marked.slice(0, segs[i].start) + `⟦${i + 1}⟧` + marked.slice(segs[i].start);
+    }
+    const system = [
+        'You label dialogue for a voice-acting text-to-speech engine.',
+        s.includeThoughts
+            ? 'In the message, every quoted line and every *asterisk* piece is marked with a number like ⟦3⟧. Use the narration around it to decide who says it and how.'
+            : 'In the message, every quoted line is marked with a number like ⟦3⟧. Use the narration around it to decide who says it and how.',
+        '',
+        'For EACH number, output exactly one line:',
+        'number|speaker|gender|tag',
+        '',
+        'Rules:',
+        `- speaker: use the exact name from the known characters list when it matches. The user's character is "${userName}" — in impersonation-style messages the user's character may also speak. Unnamed side characters get a short descriptive English label (e.g. waiter, old man). Use unknown only if truly impossible to tell.`,
+        '- gender: m, f, or u. Use the gender from the known characters list when available.',
+        '- tag: ONE short English delivery tag describing HOW the line is said: e.g. soft, warm, calm, firm, serious, irritated, amused, teasing, hesitant, nervous, sad, wistful, tired, sarcastic, cold, flustered, excited, laughing, sighing, whispering, angry, shouting, crying, pleading. Leave it empty for neutral delivery.',
+        '- Match the intensity actually written in the text — do not exaggerate. When unsure between two steps, pick the lower one.',
+        `- Every speaker has an emotional range from 1 (very restrained) to 5 (very expressive). Characters in the known list show theirs; anyone else uses ${GLOBAL_RANGE[s.emotionLevel] ?? 3}/5.`,
+        EMOTION_LADDERS,
+        '- Also follow each character\'s temperament and acting note.',
+        '- If a numbered quote is not spoken aloud (a quoted title, sign, or a word being mentioned), output: number|-',
+        ...(s.includeThoughts ? [
+            '- Numbered *asterisk* pieces are usually narration (actions, descriptions, scenery) → output: number|-',
+            '- ONLY when an *asterisk* piece is clearly a character\'s inner thought (first-person thinking), output: number|speaker|gender|tag|thought',
+        ] : []),
+        ...(s.sfxEnabled ? [
+            '- Sound effects: when the NARRATION clearly describes a distinct, audible sound (a door slamming, footsteps, thunder, glass shattering, a knock, a gunshot), add a line S|after|sound where "after" is the number of the quote it comes after (0 = before the first quote) and "sound" is ONE short English sound tag. At most 3. Skip quiet or vague sounds.',
+            `- Prefer these sound tags when one fits: ${[...customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))), SFX_TAG_HINT].join(', ')}.`,
+        ] : []),
+        '- Output ONLY these lines. No prose, no JSON, no code fences.',
+        '',
+        'Example:',
+        '1|Cliff|m|irritated',
+        '2|Edith|f|',
+        ...(s.sfxEnabled ? ['S|2|door slam'] : []),
+        '3|waiter|m|nervous',
+        ...(s.includeThoughts ? ['4|-', '5|Cliff|m|wistful|thought'] : []),
+    ];
+    if (s.extraInstructions?.trim()) {
+        system.push('', 'Additional instructions from the user:', s.extraInstructions.trim());
+    }
+    const user = ['Known characters:', known.join('\n'), ''];
+    if (prevText) user.push('Previous message (CONTEXT ONLY):', '<<<', prevText, '>>>', '');
+    user.push('Message:', '<<<', marked, '>>>');
+    return { system: system.join('\n'), user: user.join('\n') };
+}
+
+function parseFastOutput(raw, segs) {
+    const cleaned = String(raw ?? '')
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
+        .replace(/```[a-z]*/gi, '');
+    const labels = new Map();
+    const sfxAfter = new Map(); // quote number -> [sound tags]
+    for (const rawLine of cleaned.split('\n')) {
+        const line = rawLine.trim().replace(/^[-*]\s*/, '');
+        const sfx = /^S\s*\|\s*(\d+)\s*\|\s*(.+)$/i.exec(line);
+        if (sfx) {
+            const tag = sfx[2].replace(/[[\]|]/g, '').trim();
+            if (tag) sfxAfter.set(Number(sfx[1]), [...(sfxAfter.get(Number(sfx[1])) ?? []), tag]);
+            continue;
+        }
+        const m = /^⟦?(\d+)⟧?\s*\|(.*)$/.exec(line);
+        if (!m) continue;
+        const n = Number(m[1]);
+        if (n < 1 || n > segs.length || labels.has(n)) continue;
+        const [speaker = '', gender = '', tag = '', kind = ''] = m[2].split('|').map(x => x.trim());
+        labels.set(n, { speaker, gender: gender.toLowerCase(), tag: tag.replace(/[[\]]/g, ''), thought: /thought|생각/i.test(kind) });
+    }
+    // every spoken quote should be answered; asterisk narration may be skipped by the model
+    const quoteNums = segs.map((seg, i) => (seg.kind === 'star' ? 0 : i + 1)).filter(Boolean);
+    const answered = quoteNums.filter(n => labels.has(n)).length;
+    if (quoteNums.length ? answered < Math.ceil(quoteNums.length / 2) : !labels.size && !sfxAfter.size && !/\|/.test(cleaned)) {
+        throw new ClassifierError('빠른 분류 응답에서 번호를 충분히 찾지 못했어요.', raw);
+    }
+    const script = [];
+    const pushSfx = (after) => {
+        for (const tag of (sfxAfter.get(after) ?? []).slice(0, 3)) {
+            script.push({ speaker: 'SFX', gender: 'u', type: 'sfx', tag: '', text: `[${tag}]` });
+        }
+    };
+    pushSfx(0);
+    segs.forEach((seg, i) => {
+        const l = labels.get(i + 1);
+        if (l && l.speaker && l.speaker !== '-') {
+            script.push({
+                speaker: l.speaker || 'unknown',
+                gender: ['m', 'f'].includes(l.gender) ? l.gender : 'u',
+                // a named *asterisk* piece can only be a thought (narration answers "-")
+                type: l.thought || seg.kind === 'star' ? 'thought' : 'speech',
+                tag: l.tag,
+                text: seg.text,
+            });
+        }
+        pushSfx(i + 1);
+    });
+    return script;
+}
+
+async function runFastClassifier(text, segs, prevText, userName) {
+    const s = getSettings();
+    const ctx = SillyTavern.getContext();
+    const { system, user } = buildFastPrompt(text, segs, prevText, userName);
+    const timeoutSec = 60;
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('빠른 분류 시간 초과')), timeoutSec * 1000);
+    });
+    try {
+        const raw = await Promise.race([classifierRaw(s, ctx, system, user), timeout]);
+        return parseFastOutput(raw, segs);
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 /**
@@ -677,10 +875,20 @@ async function getScriptInner(messageId, { force = false } = {}) {
     const key = scriptKey(text);
     const cached = getStoredEntry(message);
     if (Array.isArray(cached?.script)) fixUserSpeaker(cached.script, messageId);
+    // 1인 모드 can't translate (that needs the AI), so it only applies when reading as written
+    const solo = soloOn() && s.voiceLang !== 'translate';
+    const soloKey = `${key}|solo`;
     if (!force && Array.isArray(cached?.script)) {
         // A script the user edited is kept as long as the message text itself didn't change
         if (cached.edited && cached.textHash === textHash) return cached.script;
-        if (cached.hash === key) return cached.script;
+        if (cached.hash === key) return cached.script; // an AI script is better and already paid for
+        if (solo && cached.hash === soloKey) return cached.script;
+    }
+    if (solo) {
+        const script = soloScript(message, messageId, text);
+        setStoredEntry(message, { hash: soloKey, textHash, script, edited: false });
+        await ctx.saveChat();
+        return script;
     }
 
     let prevText = '';
@@ -690,7 +898,20 @@ async function getScriptInner(messageId, { force = false } = {}) {
         if (prev) prevText = getMessageText(prev).slice(-contextChars);
     }
 
-    const script = await runClassifier(text, prevText, userNameFor(messageId));
+    let script = null;
+    // 빠른 분류: lines are quotes (+ *asterisk* pieces when inner thoughts are on); not with AI translation
+    if (s.fastClassify && s.voiceLang !== 'translate') {
+        const segs = quoteSegments(text, { stars: !!s.includeThoughts });
+        if (segs.length) {
+            try {
+                script = await runFastClassifier(text, segs, prevText, userNameFor(messageId));
+            } catch (e) {
+                console.warn(LOG, 'fast classify failed, using the full classifier', e, e?.raw);
+                script = null;
+            }
+        }
+    }
+    script ??= await runClassifier(text, prevText, userNameFor(messageId));
 
     setStoredEntry(message, { hash: key, textHash, script, edited: false });
     await ctx.saveChat();
@@ -3639,6 +3860,14 @@ function addWandItem() {
         </div>`);
     $sfx.on('click', () => setSfx(!getSettings().sfxEnabled));
     $menu.append($sfx);
+    const $solo = $(`
+        <div id="voice_cast_wand_solo" class="list-group-item flex-container flexGap5" title="이 봇은 AI 분류 없이 바로 읽기 (1인봇용)">
+            <div class="extensionsMenuExtensionButton fa-solid fa-user"></div>
+            <span id="voice_cast_wand_solo_label"></span>
+        </div>`);
+    $solo.on('click', () => setSolo(!soloOn()));
+    $menu.append($solo);
+    updateSoloUI();
     updateWandItem();
     updateWandItem();
 }
@@ -3818,6 +4047,10 @@ function settingsHtml() {
                 <div class="vc_section_title">🧠 대사 분류 AI</div>
                 <div class="vc_hint">비워두면 지금 연결된 메인 API를 써요. 싼 모델 프로필을 따로 골라두는 걸 추천!</div>
                 <select id="voice_cast_profile" class="text_pole"></select>
+                <label class="checkbox_label"><input id="voice_cast_solo" type="checkbox" /><span id="voice_cast_solo_label">이 봇은 1인 모드</span></label>
+                <div class="vc_hint vc_sub">👤 AI 분류 없이 따옴표 대사를 전부 이 봇 목소리로 바로 읽어요 (내 메시지는 내 목소리). 기다림·비용 0. 감정 태그와 효과음은 빠지고, 조연 대사도 봇 목소리로 나와요. 봇마다 따로 기억해요.</div>
+                <label class="checkbox_label"><input id="voice_cast_fast" type="checkbox" /><span>⚡ 빠른 분류 <span class="vc_beta">BETA</span></span></label>
+                <div class="vc_hint vc_sub">따옴표 대사를 확장이 먼저 뽑고, AI는 누가·어떤 감정인지만 짧게 답해요. 훨씬 빨라요. 속마음 읽기를 켜면 *별표* 구간도 AI가 속마음인지 지문인지 골라요. 따옴표·별표가 없거나 'AI 번역해서 읽기'를 켜면 원래 방식으로 해요.</div>
                 <div class="vc_row">
                     <label for="voice_cast_max_tokens">최대 응답 토큰</label>
                     <input id="voice_cast_max_tokens" type="number" class="text_pole" min="256" max="16000" step="128" style="width:90px" />
@@ -3997,6 +4230,9 @@ function bindSettingsUI() {
     bindNumber('#voice_cast_translation_wait', 'translationWaitSec');
     bindNumber('#voice_cast_max_tokens', 'maxTokens');
     bindNumber('#voice_cast_context_chars', 'contextChars');
+    bindCheck('#voice_cast_fast', 'fastClassify');
+    $('#voice_cast_solo').on('change', function () { setSolo(!!this.checked); });
+    updateSoloUI();
     bindNumber('#voice_cast_concurrency', 'concurrency');
     bindRange('#voice_cast_stability', 'stability', pct);
     bindRange('#voice_cast_similarity', 'similarity', pct);
@@ -4393,6 +4629,7 @@ jQuery(async () => {
         setTimeout(injectButtons, 100);
         ensureBotCast();
         renderCastList();
+        updateSoloUI();
         // the bot's linked persona can be applied right after this event
         setTimeout(() => { ensureBotCast(); renderCastList(); renderListenList(); }, 800);
     });
