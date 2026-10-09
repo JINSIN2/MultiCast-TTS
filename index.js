@@ -4503,7 +4503,7 @@ function addWandItem() {
     if (!$menu.length) return;
     // one entry only — the quick toggles live in a small popup so the wand menu stays short
     const $item = $(`
-        <div id="voice_cast_wand" class="list-group-item flex-container flexGap5" title="MultiCast TTS 빠른 메뉴 (음성 언어 · 1인 모드 · 효과음 · 저장된 음성)">
+        <div id="voice_cast_wand" class="list-group-item flex-container flexGap5" title="MultiCast TTS 빠른 메뉴 (음성 언어 · 기다림 없이 바로 듣기 · 효과음 · 저장된 음성)">
             <div class="extensionsMenuExtensionButton fa-solid fa-headphones"></div>
             <span>MultiCast TTS</span>
         </div>`);
@@ -4513,13 +4513,21 @@ function addWandItem() {
     updateInlinePrompt();
 }
 
+function setInlineTags(on) {
+    getSettings().inlineTags = !!on;
+    save();
+    $('#voice_cast_inline').prop('checked', !!on);
+    updateInlinePrompt();
+    toastr.info(on ? '🚀 기다림 없이 바로 듣기 켬 (새로 받는 답변부터)' : '🚀 기다림 없이 바로 듣기 끔', 'MultiCast TTS', { timeOut: 1800 });
+}
+
 async function openQuickMenu() {
     const ctx = SillyTavern.getContext();
     const $box = $('<div class="vc_quick_menu"></div>');
     let popup = null;
     const rows = [
         { id: 'lang', icon: 'fa-language', label: () => `음성 언어: ${voiceLangLabel()}`, hint: '누를 때마다 화면대로 → 원문 → AI 번역', run: () => cycleVoiceLang() },
-        { id: 'solo', icon: 'fa-user', label: () => `1인 모드 (이 봇): ${soloOn() ? '켜짐' : '꺼짐'}`, hint: 'AI 분류 없이 바로 읽기', run: () => setSolo(!soloOn()) },
+        { id: 'inline', icon: 'fa-rocket', label: () => `기다림 없이 바로 듣기: ${getSettings().inlineTags ? '켜짐' : '꺼짐'}`, hint: '답변을 쓸 때 대본도 같이 만들어요 (BETA)', run: () => setInlineTags(!getSettings().inlineTags) },
         { id: 'sfx', icon: 'fa-bell', label: () => `효과음: ${getSettings().sfxEnabled ? '켜짐' : '꺼짐'}`, hint: '', run: () => setSfx(!getSettings().sfxEnabled) },
         { id: 'saved', icon: 'fa-list', label: () => '이 채팅 대사 음성', hint: '', run: () => { popup?.completeCancelled?.(); setTimeout(openSavedList, 50); } },
         { id: 'all', icon: 'fa-folder-open', label: () => '모든 봇 대사 음성 · ⭐ 즐겨찾기', hint: '봇·캐릭터별로 골라 보기', run: () => { popup?.completeCancelled?.(); setTimeout(() => openAllVoices(), 50); } },
