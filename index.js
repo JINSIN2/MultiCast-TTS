@@ -497,6 +497,7 @@ function buildClassifierPromptFrom(known, userName, text, prevText) {
             `- Sound effects: when the NARRATION clearly describes a distinct, audible sound (e.g. a door creaking or slamming, footsteps, thunder rumbling, clapping, a dog barking, glass shattering, a loud knock, a gunshot), add a SEPARATE entry at the point where it happens: {"speaker":"SFX","gender":"u","type":"sfx","tag":"","text":"[door creaking]"}. "text" is ONE short English sound tag in square brackets. At most ${sfxLimit()} per message. Skip quiet or vague sounds, and never put sound tags inside dialogue lines.`,
             ...(s.adultSfx ? [ADULT_SFX_RULE] : []),
             `- Prefer these sound tags when one fits: ${[...customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))), SFX_TAG_HINT].join(', ')}.`,
+            ...(translating ? ['- Sound-effect entries are NEVER translated: their "text" stays the English sound tag in [brackets].'] : []),
         ] : []),
         '- Also follow each character\'s temperament and acting note (a calm character stays composed; a hot-tempered one reacts sooner and stronger, within their range).',
         '- Output ONLY a valid JSON array. No prose, no markdown, no code fences. Escape any double quote inside a string as \\". If there is nothing to extract, output [].',
@@ -614,9 +615,18 @@ function parseClassifierOutput(raw) {
             gender: ['m', 'f'].includes(String(x.gender).toLowerCase()) ? String(x.gender).toLowerCase() : 'u',
             type: x.type === 'thought' ? 'thought' : x.type === 'sfx' ? 'sfx' : 'speech',
             tag: String(x.tag ?? '').replace(/[[\]]/g, '').trim(),
-            text: x.text.trim(),
+            text: sfxEnglishText(x),
             ...(typeof x.orig === 'string' && x.orig.trim() ? { orig: x.orig.trim() } : {}),
         }));
+}
+
+/** Sound tags must stay English (so 내 효과음 / built-in sounds match) — if the AI translated one, use its original. */
+function sfxEnglishText(x) {
+    const t = String(x.text ?? '').trim();
+    if (x.type !== 'sfx' || /[a-z]/i.test(t)) return t;
+    const o = String(x.orig ?? '').trim();
+    if (!/[a-z]/i.test(o)) return t;
+    return o.startsWith('[') ? o : `[${o}]`;
 }
 
 async function runClassifier(text, prevText, userName = null) {
@@ -876,8 +886,27 @@ function inlineTagInstruction() {
             ...(s.adultSfx ? ['- In adult scenes (all characters adults), also mark intimate sounds the same way: kiss, wet squelch, slurp, lick, skin slap, bed creak, panting, sheets rustle.'] : []),
             ...(customSfxLibrary().length ? [`- Prefer these sound tags when one fits: ${customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))).slice(0, 40).join(', ')}.`] : []),
         ] : []),
+        ...inlineActingNotes(),
         '- One tag per quote. Write everything else exactly as you normally would. The tags are hidden from the reader; never mention them.',
     ].join('\n');
+}
+
+/** The cast's temperament / acting notes, so the e="…" the RP model picks fits each character (like the classifier does). */
+function inlineActingNotes() {
+    const lines = [];
+    for (const entry of allCastEntries()) {
+        const name = String(entry.names ?? '').split(',').map(n => n.trim()).filter(Boolean)[0];
+        if (!name || name.toLowerCase() === '{{user}}') continue;
+        const bits = [];
+        if (TEMPERS[entry.temper]) bits.push(`temperament: ${TEMPERS[entry.temper].hint}`);
+        if (String(entry.actingNote ?? '').trim()) bits.push(`acting note: ${String(entry.actingNote).trim()}`);
+        if (!bits.length) continue;
+        bits.push(`emotional range ${rangeFor(entry)}/5 (1 = very restrained, 5 = very expressive)`);
+        lines.push(`  ${name} — ${bits.join('; ')}`);
+        if (lines.length >= 15) break;
+    }
+    if (!lines.length) return [];
+    return ['- Pick e to fit each character\'s way of speaking (stay within their range; when unsure, the calmer word):', ...lines];
 }
 
 /** Keep the instruction in (or out of) the prompt to match the setting and the current bot. */
