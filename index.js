@@ -40,7 +40,11 @@ const defaultSettings = Object.freeze({
     holdToPlay: false,       // press and hold a line of dialogue to hear it (a short tap stays free for translators)
     soloBots: {},            // { botKey: true } — 1인 모드: no AI classification, every quote is the bot's line
     extraInstructions: '',
-    pacing: 'off',           // 'off' | 'natural' | 'slow' — breathing room between lines
+    pacing: 'off',           // legacy preset (2.8.0+: the pause sliders below)
+    pauseSame: 0,            // ms before the same speaker's next line
+    pauseChange: 0,          // ms when the speaker changes
+    pauseNarr: 0,            // × how long narration in between takes to read (0 = ignore it)
+    pauseBetween: 600,       // ms when going on to the next message
     continuePlay: false,     // after a message, go on to the next one
     continueMode: 'saved',
     stepMode: false,
@@ -104,6 +108,12 @@ function getSettings() {
     if (!s._migratedPlayerDefaultOn) {
         s.player = true;
         s._migratedPlayerDefaultOn = true;
+    }
+    // 2.8.0: 호흡 preset → sliders
+    if (!s._migratedPauseSliders) {
+        const p = PACING[s.pacing];
+        if (p) Object.assign(s, { pauseSame: p.same, pauseChange: p.change, pauseNarr: p.perChar / 12, pauseBetween: p.between });
+        s._migratedPauseSliders = true;
     }
     // 2.6.3: 빠른 분류 left BETA and is on by default — switch it on once for existing installs too.
     if (!s._migratedFastClassifyOn) {
@@ -1374,7 +1384,7 @@ async function getCachedAudio(key) {
         const blob = await st.getItem(key);
         if (!blob) return null;
         const index = await loadIndex();
-        index[key] = { t: Date.now(), size: index[key]?.size ?? blob.size ?? 0 };
+        index[key] = { ...index[key], t: Date.now(), size: index[key]?.size ?? blob.size ?? 0 };
         saveIndexSoon();
         return rememberUrl(key, blob);
     } catch (e) {
@@ -1389,7 +1399,7 @@ async function putCachedAudio(key, blob) {
     try {
         await st.setItem(key, blob);
         const index = await loadIndex();
-        index[key] = { t: Date.now(), size: blob.size ?? 0 };
+        index[key] = { ...index[key], t: Date.now(), size: blob.size ?? 0 };
         await pruneCache();
         saveIndexSoon();
     } catch (e) {
@@ -1403,7 +1413,8 @@ async function pruneCache() {
     const limit = Math.max(10, Number(getSettings().audioCacheMB) || 300) * 1024 * 1024;
     let total = Object.values(index).reduce((a, v) => a + (v.size || 0), 0);
     if (total <= limit) return;
-    const oldestFirst = Object.entries(index).sort((a, b) => a[1].t - b[1].t);
+    // ⭐ favourites are never pruned
+    const oldestFirst = Object.entries(index).filter(([, meta]) => !meta?.fav).sort((a, b) => a[1].t - b[1].t);
     for (const [key, meta] of oldestFirst) {
         if (total <= limit * 0.9) break;
         await st.removeItem(key).catch(() => {});
@@ -1420,10 +1431,272 @@ async function cacheStats() {
 }
 
 async function clearAudioCache() {
-    await getStore()?.clear();
-    storeIndex = {};
-    for (const url of memoryUrls.values()) URL.revokeObjectURL(url);
-    memoryUrls.clear();
+    const index = await loadIndex();
+    const favs = Object.fromEntries(Object.entries(index).filter(([, meta]) => meta?.fav));
+    if (!Object.keys(favs).length) {
+        await getStore()?.clear();
+        storeIndex = {};
+    } else {
+        // keep ⭐ favourites, drop everything else
+        const st = getStore();
+        for (const key of Object.keys(index)) {
+            if (favs[key]) continue;
+            await st?.removeItem(key).catch(() => {});
+        }
+        storeIndex = favs;
+        await st?.setItem(INDEX_KEY, storeIndex).catch(() => {});
+    }
+    for (const [key, url] of memoryUrls) {
+        if (favs[key]) continue;
+        URL.revokeObjectURL(url);
+        memoryUrls.delete(key);
+    }
+}
+
+// --- ⭐ 즐겨찾기: kept forever (never pruned, survives '전부 지우기'), listed across chats ---
+
+function isFav(key) {
+    return !!storeIndex?.[key]?.fav;
+}
+
+async function setFav(key, on, line = null) {
+    const index = await loadIndex();
+    if (!index[key]) {
+        toastr.info('이 기기에는 이 음성이 없어서 즐겨찾기할 수 없어요.', 'MultiCast TTS');
+        return false;
+    }
+    if (on) {
+        const ctx = SillyTavern.getContext();
+        index[key].fav = true;
+        index[key].info ??= {
+            speaker: line?.speaker || '?',
+            text: String(line?.text ?? '').slice(0, 300),
+            bot: currentBot()?.name || ctx.name2 || '',
+            at: Date.now(),
+        };
+    } else {
+        delete index[key].fav;
+    }
+    saveIndexSoon();
+    return true;
+}
+
+async function downloadKey(key, name) {
+    const blob = await getStore()?.getItem(key).catch(() => null);
+    if (!blob) {
+        toastr.info('이 기기에는 저장된 음성이 없어요.', 'MultiCast TTS');
+        return;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${name}.mp3`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/** Who said it, in which bot — kept with the audio so voices from every chat can be listed. */
+function noteClipInfo(key, line, bot = null) {
+    if (!key || !line || isLocalSfxKey(key)) return;
+    loadIndex().then((index) => {
+        const meta = index[key];
+        if (!meta || meta.info) return;
+        const ctx = SillyTavern.getContext();
+        meta.info = {
+            speaker: line.speaker || '?',
+            text: String(line.text ?? '').slice(0, 300),
+            bot: bot ?? (currentBot()?.name || ctx.name2 || ''),
+            at: meta.t || Date.now(),
+        };
+        saveIndexSoon();
+    }).catch(() => {});
+}
+
+/** Fill in who/what for saved voices from a list of chat messages (this chat, or chats read from the server). */
+function backfillFromMessages(messages, botName, index) {
+    let filled = 0;
+    for (const message of messages ?? []) {
+        const root = message?.extra?.[MODULE_NAME];
+        if (!root) continue;
+        const variants = root.variants ?? (Array.isArray(root.script) ? { display: root } : {});
+        for (const entry of Object.values(variants)) {
+            for (const line of entry?.script ?? []) {
+                const meta = line?.audioKey && index[line.audioKey];
+                if (!meta || meta.info || isLocalSfxKey(line.audioKey)) continue;
+                meta.info = { speaker: line.speaker || '?', text: String(line.text ?? '').slice(0, 300), bot: botName || '', at: meta.t || 0 };
+                filled++;
+            }
+        }
+    }
+    return filled;
+}
+
+/** '예전 채팅 훑기': read every saved chat once and label the voices that were made before labels existed. */
+async function scanAllChatsForVoices(onProgress) {
+    const ctx = SillyTavern.getContext();
+    const index = await loadIndex();
+    const missing = () => Object.values(index).filter(m => !m.info).length;
+    if (!missing()) return 0;
+    const headers = ctx.getRequestHeaders();
+    const post = async (url, body) => {
+        const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+    };
+    let filled = 0;
+    const chars = ctx.characters ?? [];
+    for (let c = 0; c < chars.length && missing(); c++) {
+        const ch = chars[c];
+        onProgress?.(`캐릭터 ${c + 1}/${chars.length} · ${ch.name}`);
+        let list = [];
+        try { list = Object.values(await post('/api/characters/chats', { avatar_url: ch.avatar, simple: true }) ?? {}); } catch { continue; }
+        for (const item of list) {
+            const file = String(item?.file_name ?? '').replace(/\.jsonl$/, '');
+            if (!file) continue;
+            try {
+                const chat = await post('/api/chats/get', { ch_name: ch.name, file_name: file, avatar_url: ch.avatar });
+                filled += backfillFromMessages(chat, ch.name, index);
+            } catch { /* skip that chat */ }
+            if (!missing()) break;
+        }
+    }
+    for (const g of ctx.groups ?? []) {
+        if (!missing()) break;
+        onProgress?.(`그룹 · ${g.name}`);
+        for (const id of g.chats ?? []) {
+            try {
+                const chat = await post('/api/chats/group/get', { id });
+                filled += backfillFromMessages(chat, g.name, index);
+            } catch { /* skip */ }
+        }
+    }
+    saveIndexSoon();
+    return filled;
+}
+
+/** Every saved voice on this device, from any bot: filter by bot · character · ⭐, search, play, keep, delete. */
+async function openAllVoices({ favOnly = false } = {}) {
+    const ctx = SillyTavern.getContext();
+    const index = await loadIndex();
+    backfillFromMessages(ctx.chat, currentBot()?.name || ctx.name2 || '', index); // this chat is already in memory
+    saveIndexSoon();
+    const $box = $(`
+        <div class="vc_saved">
+            <div class="vc_saved_head"><b>모든 봇의 대사 음성</b> <span class="vc_hint vc_all_count"></span>
+                ${ctx.chat?.length ? '<span class="menu_button menu_button_icon vc_switch_list"><i class="fa-solid fa-list"></i><span>이 채팅만 보기</span></span>' : ''}</div>
+            <div class="vc_saved_filters">
+                <select class="text_pole vc_all_bot"><option value="">모든 봇</option></select>
+                <select class="text_pole vc_all_speaker"><option value="">모든 캐릭터</option></select>
+                <input class="text_pole vc_saved_search" type="search" placeholder="대사 검색" />
+                <label class="checkbox_label vc_saved_favonly"><input type="checkbox" class="vc_all_fav" /><span>⭐만</span></label>
+            </div>
+            <div class="vc_all_unknown vc_hint"></div>
+            <div class="vc_saved_list"></div>
+        </div>`);
+    $box.find('.vc_all_fav').prop('checked', favOnly);
+    const $list = $box.find('.vc_saved_list');
+    const entries = () => Object.entries(index).filter(([, m]) => m?.info);
+    const fillSelects = () => {
+        const bot = String($box.find('.vc_all_bot').val() ?? '');
+        const bots = [...new Set(entries().map(([, m]) => m.info.bot || '(알 수 없음)'))].sort();
+        $box.find('.vc_all_bot').html('<option value="">모든 봇</option>' + bots.map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('')).val(bots.includes(bot) ? bot : '');
+        const curBot = String($box.find('.vc_all_bot').val() ?? '');
+        const who = String($box.find('.vc_all_speaker').val() ?? '');
+        const speakers = [...new Set(entries().filter(([, m]) => !curBot || (m.info.bot || '(알 수 없음)') === curBot).map(([, m]) => m.info.speaker || '?'))].sort();
+        $box.find('.vc_all_speaker').html('<option value="">모든 캐릭터</option>' + speakers.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')).val(speakers.includes(who) ? who : '');
+    };
+    const renderUnknown = () => {
+        const n = Object.values(index).filter(m => !m?.info).length;
+        const $u = $box.find('.vc_all_unknown').empty();
+        if (!n) return;
+        $u.append(`예전에 만든 음성 ${n}개는 어느 대사인지 아직 몰라요. `);
+        const $btn = $('<span class="menu_button menu_button_icon vc_all_scan"><i class="fa-solid fa-magnifying-glass"></i><span>예전 채팅 훑기</span></span>');
+        $btn.on('click', async () => {
+            $btn.addClass('disabled');
+            const $st = $('<span class="vc_hint"> 훑는 중…</span>');
+            $u.append($st);
+            try {
+                const got = await scanAllChatsForVoices(t => $st.text(` 훑는 중… ${t}`));
+                toastr.success(`음성 ${got}개를 찾아서 정리했어요.`, 'MultiCast TTS');
+            } catch (e) {
+                toastr.error(String(e.message ?? e), 'MultiCast TTS');
+            }
+            fillSelects();
+            render();
+        });
+        $u.append($btn);
+    };
+    const render = () => {
+        renderUnknown();
+        const bot = String($box.find('.vc_all_bot').val() ?? '');
+        const who = String($box.find('.vc_all_speaker').val() ?? '');
+        const fav = $box.find('.vc_all_fav').prop('checked');
+        const q = String($box.find('.vc_saved_search').val() ?? '').trim().toLowerCase();
+        const shown = entries()
+            .filter(([, m]) => (!bot || (m.info.bot || '(알 수 없음)') === bot) && (!who || (m.info.speaker || '?') === who) && (!fav || m.fav)
+                && (!q || `${m.info.text} ${m.info.speaker}`.toLowerCase().includes(q)))
+            .sort((a, b) => (b[1].info.at || b[1].t || 0) - (a[1].info.at || a[1].t || 0));
+        $box.find('.vc_all_count').text(`${shown.length}개`);
+        if (!shown.length) {
+            $list.html(`<div class="vc_empty">${fav ? '즐겨찾기한 음성이 없어요. ☆를 누르면 여기에 모여요.' : '보여줄 음성이 없어요.'}</div>`);
+            return;
+        }
+        $list.empty();
+        let lastBot = null;
+        for (const [key, m] of shown.slice(0, 500)) {
+            const info = m.info;
+            const b = info.bot || '(알 수 없음)';
+            if (!bot && b !== lastBot) {
+                lastBot = b;
+                $list.append($('<div class="vc_saved_group"></div>').text(b));
+            }
+            const $row = $(`
+                <div class="vc_saved_row">
+                    <div class="vc_icon_btn vc_clip_play fa-solid fa-play" data-key="${escapeHtml(key)}" title="듣기"></div>
+                    <div class="vc_saved_text"><b></b> <span class="vc_all_text"></span></div>
+                    <div class="vc_icon_btn vc_clip_fav ${m.fav ? 'vc_on fa-solid' : 'fa-regular'} fa-star" title="즐겨찾기 (시간이 지나도 안 지워져요)"></div>
+                    <div class="vc_icon_btn vc_clip_dl fa-solid fa-download" title="mp3로 받기"></div>
+                    <div class="vc_icon_btn vc_clip_del fa-solid fa-trash-can" title="이 음성 지우기"></div>
+                </div>`);
+            $row.find('b').text(info.speaker || '?');
+            $row.find('.vc_all_text').text(info.text || '');
+            $row.find('.vc_clip_play').on('click', () => playClip(key, { speaker: info.speaker }));
+            $row.find('.vc_clip_dl').on('click', () => downloadKey(key, `${safeFileName(info.speaker)}_${safeFileName(info.text).slice(0, 20)}`));
+            $row.find('.vc_clip_fav').on('click', async function () {
+                const on = !m.fav;
+                if (!(await setFav(key, on, { speaker: info.speaker, text: info.text }))) return;
+                if (on) m.info.bot = info.bot; // keep the bot it came from
+                $(this).toggleClass('vc_on fa-solid', on).toggleClass('fa-regular', !on);
+            });
+            $row.find('.vc_clip_del').on('click', async () => {
+                const ok = await ctx.Popup.show.confirm('MultiCast TTS', `${m.fav ? '⭐ 즐겨찾기한 음성이에요. ' : ''}이 음성을 지울까요? 다시 들으면 새로 만들어져요(크레딧 사용).`);
+                if (!ok) return;
+                await deleteClip(key);
+                fillSelects();
+                render();
+            });
+            $list.append($row);
+        }
+        if (shown.length > 500) $list.append('<div class="vc_hint">최근 500개까지 보여요. 봇이나 캐릭터를 골라서 좁혀보세요.</div>');
+        if (clipPlayKey) setClipPlaying(clipPlayKey);
+    };
+    $box.find('.vc_all_bot').on('change', () => { fillSelects(); render(); });
+    $box.find('.vc_all_speaker, .vc_all_fav').on('change', render);
+    $box.find('.vc_saved_search').on('input', render);
+    fillSelects();
+    render();
+    const popup = new ctx.Popup($box, ctx.POPUP_TYPE.TEXT, '', { okButton: '닫기', wide: true, allowVerticalScrolling: true, leftAlign: true });
+    popup.dlg?.classList.add('vc_editor_popup');
+    let switchTo = null;
+    $box.find('.vc_switch_list').on('click', () => { switchTo = 'chat'; popup.completeCancelled?.(); });
+    await popup.show();
+    if (clipPlayKey) stopPlayback();
+    if (switchTo === 'chat') setTimeout(openSavedList, 50);
+}
+
+function openFavList() {
+    return openAllVoices({ favOnly: true });
 }
 
 function audioCacheKey(text, voiceId, model, stability, similarity) {
@@ -2290,6 +2563,7 @@ function synthesizeAll(lines, isActive, onProgress = null) {
                     src.audioKey = key;
                     pinnedChanged = true;
                 }
+                noteClipInfo(key, src);
                 finish(i, url);
             } catch (e) {
                 if (e instanceof GenerationStopped) {
@@ -2359,8 +2633,21 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
  * Breathing room before a line: longer when the speaker changes or there's narration in between
  * (roughly the time it takes to read that narration).
  */
+/** The 호흡 sliders as one profile, or null when every in-message pause is 0 ("바로 이어서"). */
+function pacingProfile() {
+    const s = getSettings();
+    const n = (v) => Math.max(0, Number(v) || 0);
+    const same = n(s.pauseSame), change = n(s.pauseChange), narr = n(s.pauseNarr);
+    if (!same && !change && !narr) return null;
+    return { same, change, thought: Math.round(Math.min(same, change) * 0.5), perChar: 12 * narr, narrMax: 1500 * narr };
+}
+
+function pauseBetweenMessages() {
+    return Math.max(0, Number(getSettings().pauseBetween) || 0);
+}
+
 function pauseBefore(prev, cur, narrChars) {
-    const p = PACING[getSettings().pacing];
+    const p = pacingProfile();
     if (!p || !prev) return 0;
     let ms = normName(prev.speaker) === normName(cur.speaker) ? p.same : p.change;
     if (cur.type === 'thought' || prev.type === 'thought') ms += p.thought;
@@ -2407,7 +2694,7 @@ function hopTo(target, opts) {
         if (session !== sessAtEnd || SillyTavern.getContext().chat !== chatAtEnd || playingMessageId !== null) return;
         document.querySelector(`#chat .mes[mesid="${target}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         playMessage(target, opts);
-    }, opts?.quick ? 150 : (PACING[getSettings().pacing]?.between ?? 600));
+    }, opts?.quick ? 150 : pauseBetweenMessages());
 }
 
 /**
@@ -2504,7 +2791,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
                 hlCursor = root ? cursorBefore(root, messageId, lines.map(l => l.src), i) : 0;
             }
             // breathing room (setting): how much narration sits between the previous line and this one
-            if (prevPlayed && PACING[s.pacing]) {
+            if (prevPlayed && pacingProfile()) {
                 let narr = 0;
                 if (root) {
                     try {
@@ -2841,6 +3128,7 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
         try {
             const made = await synthesize(buildTtsText(line), voiceId, { ...voiceSettingsFor(line), localSfx });
             line.audioKey = made.key;
+            noteClipInfo(made.key, line);
             url = made.url;
             if (ctx.chat === SillyTavern.getContext().chat) ctx.saveChat();
         } catch (e) {
@@ -2876,7 +3164,7 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
             if (target) {
                 const nextLine = getStoredEntry(SillyTavern.getContext().chat[target.messageId])?.script?.[target.index];
                 await sleep(target.messageId !== messageId
-                    ? (PACING[s.pacing]?.between ?? 600)
+                    ? pauseBetweenMessages()
                     : pauseBefore(line, nextLine ?? line, 0) || 150);
                 if (mySession !== session) return;
                 if (target.messageId !== messageId) {
@@ -2995,10 +3283,7 @@ async function deleteClip(key) {
 
 async function openSavedList() {
     const ctx = SillyTavern.getContext();
-    if (!ctx.chat?.length) {
-        toastr.info('열린 채팅이 없어요.', 'MultiCast TTS');
-        return;
-    }
+    if (!ctx.chat?.length) return openAllVoices(); // no chat open → the list across every bot
     const items = collectSavedLines();
     const index = await loadIndex();
     const speakers = [...new Set(items.map(i => i.line.speaker || '?'))].sort();
@@ -3007,10 +3292,12 @@ async function openSavedList() {
         <div class="vc_saved">
             <div class="vc_saved_head">
                 <b>이 채팅에서 만든 대사 음성</b> <span class="vc_hint">${items.length}개</span>
+                <span class="menu_button menu_button_icon vc_switch_list"><i class="fa-solid fa-folder-open"></i><span>모든 봇 보기</span></span>
             </div>
             <div class="vc_saved_filters">
                 <select class="text_pole vc_saved_speaker"><option value="">모든 캐릭터</option>${speakers.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</select>
                 <input class="text_pole vc_saved_search" type="search" placeholder="대사 검색" />
+                <label class="checkbox_label vc_saved_favonly"><input type="checkbox" class="vc_saved_fav_only" /><span>⭐만</span></label>
             </div>
             <div class="vc_saved_list"></div>
         </div>`);
@@ -3019,7 +3306,9 @@ async function openSavedList() {
     const render = () => {
         const who = String($box.find('.vc_saved_speaker').val() ?? '');
         const q = String($box.find('.vc_saved_search').val() ?? '').trim().toLowerCase();
+        const favOnly = $box.find('.vc_saved_fav_only').prop('checked');
         const shown = items.filter(i => (!who || (i.line.speaker || '?') === who)
+            && (!favOnly || isFav(i.line.audioKey))
             && (!q || `${i.line.text} ${i.line.orig ?? ''}`.toLowerCase().includes(q)));
         if (!shown.length) {
             $list.html('<div class="vc_empty">저장된 대사 음성이 없어요. 메시지를 🔊로 한 번 재생하면 여기에 쌓여요.</div>');
@@ -3039,13 +3328,20 @@ async function openSavedList() {
                 <div class="vc_saved_row${missing ? ' vc_missing' : ''}">
                     <div class="vc_icon_btn vc_clip_play fa-solid fa-play" data-key="${escapeHtml(item.line.audioKey)}" title="듣기"></div>
                     <div class="vc_saved_text"><b>${escapeHtml(item.line.speaker || '?')}</b> ${escapeHtml(item.line.text)}${missing ? ' <span class="vc_hint">(이 기기에 없음)</span>' : ''}</div>
+                    <div class="vc_icon_btn vc_clip_fav ${isFav(item.line.audioKey) ? 'vc_on fa-solid' : 'fa-regular'} fa-star" title="즐겨찾기 (시간이 지나도 안 지워져요)"></div>
                     <div class="vc_icon_btn vc_clip_dl fa-solid fa-download" title="mp3로 받기"></div>
                     <div class="vc_icon_btn vc_clip_del fa-solid fa-trash-can" title="이 음성 지우기"></div>
                 </div>`);
+            $row.find('.vc_clip_fav').on('click', async function () {
+                const on = !isFav(item.line.audioKey);
+                if (!(await setFav(item.line.audioKey, on, item.line))) return;
+                $(this).toggleClass('vc_on fa-solid', on).toggleClass('fa-regular', !on);
+                toastr.info(on ? '⭐ 즐겨찾기했어요. 시간이 지나도 안 지워져요.' : '즐겨찾기를 해제했어요.', 'MultiCast TTS', { timeOut: 1500 });
+            });
             $row.find('.vc_clip_play').on('click', () => playClip(item.line.audioKey, item.line));
             $row.find('.vc_clip_dl').on('click', () => downloadClip(item));
             $row.find('.vc_clip_del').on('click', async () => {
-                const ok = await ctx.Popup.show.confirm('MultiCast TTS', '이 대사 음성을 지울까요? 다음에 메시지를 재생하면 새로 만들어져요(크레딧 사용).');
+                const ok = await ctx.Popup.show.confirm('MultiCast TTS', `${isFav(item.line.audioKey) ? '⭐ 즐겨찾기한 음성이에요. ' : ''}이 대사 음성을 지울까요? 다음에 메시지를 재생하면 새로 만들어져요(크레딧 사용).`);
                 if (!ok) return;
                 const key = item.line.audioKey;
                 await deleteClip(key);
@@ -3062,6 +3358,8 @@ async function openSavedList() {
     };
     $box.find('.vc_saved_speaker').on('change', render);
     $box.find('.vc_saved_search').on('input', render);
+    $box.find('.vc_saved_fav_only').on('change', render);
+    let switchTo = null;
     $list.on('click', '.vc_saved_group', function () {
         const el = document.querySelector(`#chat .mes[mesid="${$(this).data('mes')}"]`);
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -3076,8 +3374,10 @@ async function openSavedList() {
         leftAlign: true,
     });
     popup.dlg?.classList.add('vc_editor_popup');
+    $box.find('.vc_switch_list').on('click', () => { switchTo = 'all'; popup.completeCancelled?.(); });
     await popup.show();
     if (clipPlayKey) stopPlayback();
+    if (switchTo === 'all') setTimeout(() => openAllVoices(), 50);
 }
 
 // ---------------------------------------------------------------------------
@@ -3619,6 +3919,107 @@ function castArray(scope) {
     return scope === 'bot' ? getBotCast(true) : getSettings().cast;
 }
 
+/** The per-character settings panel (opened in its own window from the ⚙ on a cast row). */
+function castAdvHtml() {
+    return `
+        <div class="vc_cast_adv">
+            <div class="vc_row">
+                <label>성격</label>
+                <select class="text_pole vc_cast_temper" style="width:auto">
+                    <option value="">기본 (대사대로)</option>
+                    ${Object.entries(TEMPERS).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('')}
+                </select>
+            </div>
+            <div class="vc_row">
+                <label>감정 폭</label>
+                <select class="text_pole vc_cast_range" style="width:auto">
+                    <option value="">기본</option>
+                    ${Object.entries(RANGE_LABELS).map(([k, l]) => `<option value="${k}">${k} · ${l}</option>`).join('')}
+                </select>
+                <span class="vc_hint vc_cast_range_hint"></span>
+            </div>
+            <input type="text" class="text_pole vc_cast_always" placeholder="항상 붙일 태그 (영어, 쉼표로) 예: soft-spoken, slow drawl" title="이 캐릭터 대사마다 [태그]로 붙어서 말투를 일정하게 잡아줘요. v3/v4 전용. 1~2개 추천." />
+            <input type="text" class="text_pole vc_cast_note" placeholder="연기 메모 (선택) 예: 화나도 목소리 안 높임, 말끝을 흐림" />
+            <div class="vc_row">
+                <label>형광펜 색</label>
+                <input type="color" class="vc_cast_color" />
+                <div class="menu_button menu_button_icon vc_cast_color_reset" title="기본 형광펜 색으로"><i class="fa-solid fa-xmark"></i><span>기본색</span></div>
+            </div>
+            <label>음량: <span class="vc_cast_vol_val"></span></label>
+            <input type="range" class="vc_cast_vol" min="0" max="2" step="0.05" />
+            <label>속도: <span class="vc_cast_rate_val"></span></label>
+            <input type="range" class="vc_cast_rate" min="0.7" max="1.5" step="0.05" />
+            <label>Stability: <span class="vc_cast_stab_val"></span></label>
+            <input type="range" class="vc_cast_stab" min="0" max="1" step="0.05" />
+            <label>Similarity: <span class="vc_cast_sim_val"></span></label>
+            <input type="range" class="vc_cast_sim" min="0" max="1" step="0.05" />
+            <div class="vc_row">
+                <span class="vc_hint">낮은 Stability = 감정 폭이 크고 들쭉날쭉 · 높으면 차분하고 일정해요.</span>
+                <div class="menu_button menu_button_icon vc_cast_adv_reset"><i class="fa-solid fa-rotate-left"></i><span>공통 설정 따르기</span></div>
+            </div>
+        </div>`;
+}
+
+function fillCastAdv($row, entry) {
+    const g = getSettings();
+    const stab = entry.stability ?? null;
+    const sim = entry.similarity ?? null;
+    $row.find('.vc_cast_stab').val(stab ?? g.stability);
+    $row.find('.vc_cast_sim').val(sim ?? g.similarity);
+    $row.find('.vc_cast_stab_val').text(stab === null ? `공통 (${Math.round(g.stability * 100)}%)` : `${Math.round(stab * 100)}%`);
+    $row.find('.vc_cast_sim_val').text(sim === null ? `공통 (${Math.round(g.similarity * 100)}%)` : `${Math.round(sim * 100)}%`);
+    $row.find('.vc_cast_temper').val(entry.temper ?? '');
+    $row.find('.vc_cast_range').val(entry.range ? String(entry.range) : '');
+    $row.find('.vc_cast_range_hint').text(entry.range ? '' : `지금 ${rangeFor(entry)} · ${RANGE_LABELS[rangeFor(entry)]}`);
+    $row.find('.vc_cast_note').val(entry.actingNote ?? '');
+    $row.find('.vc_cast_always').val(entry.alwaysTags ?? '');
+    $row.find('.vc_cast_color').val(/^#[0-9a-f]{6}$/i.test(entry.color ?? '') ? entry.color : '#ffd54f');
+    $row.find('.vc_cast_color').toggleClass('vc_color_unset', !entry.color);
+    const vol = entry.volume ?? null;
+    $row.find('.vc_cast_vol').val(vol ?? 1);
+    $row.find('.vc_cast_vol_val').text(vol === null ? '100%' : `${Math.round(vol * 100)}%`);
+    const crate = entry.rate ?? null;
+    $row.find('.vc_cast_rate').val(crate ?? 1);
+    $row.find('.vc_cast_rate_val').text(crate === null ? '기본 (1배)' : `${Number(crate).toFixed(2).replace(/0$/, '')}배`);
+}
+
+/** ⚙ on a cast row → this character's settings in a window; 저장 keeps them, 취소 puts everything back. */
+async function openCastAdvPopup(scope, i) {
+    const ctx = SillyTavern.getContext();
+    const list = castArray(scope);
+    const entry = list?.[i];
+    if (!entry) return;
+    const before = structuredClone(entry);
+    const name = String(entry.names ?? '').split(',')[0]?.trim() || '이름 없는 캐릭터';
+    const $box = $(`
+        <div class="vc_cast_popup">
+            <h3>🎭 <span class="vc_cast_popup_name"></span> 설정</h3>
+            <div class="vc_cast_row" data-scope="${scope}" data-index="${i}">${castAdvHtml()}</div>
+        </div>`);
+    $box.find('.vc_cast_popup_name').text(name);
+    const $row = $box.find('.vc_cast_row');
+    const refill = () => { const e = castArray(scope)?.[i]; if (e) fillCastAdv($row, e); };
+    refill();
+    bindCastAdvHandlers($box);
+    // re-read after changes that reset or recompute other fields
+    $box.on('change', '.vc_cast_temper, .vc_cast_range', () => setTimeout(refill, 0));
+    $box.on('click', '.vc_cast_color_reset, .vc_cast_adv_reset', () => setTimeout(refill, 0));
+    const popup = new ctx.Popup($box, ctx.POPUP_TYPE.TEXT, '', { okButton: '저장', cancelButton: '취소', wide: false, leftAlign: true, allowVerticalScrolling: true });
+    popup.dlg?.classList.add('vc_cast_popup_dlg');
+    const result = await popup.show();
+    if (result !== ctx.POPUP_RESULT.AFFIRMATIVE) {
+        const cur = castArray(scope);
+        if (cur?.[i]) {
+            for (const k of Object.keys(cur[i])) delete cur[i][k];
+            Object.assign(cur[i], before);
+        }
+    } else {
+        toastr.success(`${name} 설정을 저장했어요.`, 'MultiCast TTS', { timeOut: 1500 });
+    }
+    save();
+    renderCastList();
+}
+
 function renderCastList() {
     const s = getSettings();
     const bot = currentBot();
@@ -3646,64 +4047,7 @@ function renderCastList() {
                         ${scope === 'global' && !bot ? '' : `<div class="vc_cast_move fa-solid ${scope === 'bot' ? 'fa-globe' : 'fa-user-tag'}" title="${moveTitle}"></div>`}
                         <div class="vc_cast_delete fa-solid fa-trash-can" title="삭제"></div>
                     </div>
-                    <div class="vc_cast_adv" style="display:none">
-                        <div class="vc_row">
-                            <label>성격</label>
-                            <select class="text_pole vc_cast_temper" style="width:auto">
-                                <option value="">기본 (대사대로)</option>
-                                ${Object.entries(TEMPERS).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('')}
-                            </select>
-                        </div>
-                        <div class="vc_row">
-                            <label>감정 폭</label>
-                            <select class="text_pole vc_cast_range" style="width:auto">
-                                <option value="">기본</option>
-                                ${Object.entries(RANGE_LABELS).map(([k, l]) => `<option value="${k}">${k} · ${l}</option>`).join('')}
-                            </select>
-                            <span class="vc_hint vc_cast_range_hint"></span>
-                        </div>
-                        <input type="text" class="text_pole vc_cast_always" placeholder="항상 붙일 태그 (영어, 쉼표로) 예: soft-spoken, slow drawl" title="이 캐릭터 대사마다 [태그]로 붙어서 말투를 일정하게 잡아줘요. v3/v4 전용. 1~2개 추천." />
-                        <input type="text" class="text_pole vc_cast_note" placeholder="연기 메모 (선택) 예: 화나도 목소리 안 높임, 말끝을 흐림" />
-                        <div class="vc_row">
-                            <label>형광펜 색</label>
-                            <input type="color" class="vc_cast_color" />
-                            <div class="menu_button menu_button_icon vc_cast_color_reset" title="기본 형광펜 색으로"><i class="fa-solid fa-xmark"></i><span>기본색</span></div>
-                        </div>
-                        <label>음량: <span class="vc_cast_vol_val"></span></label>
-                        <input type="range" class="vc_cast_vol" min="0" max="2" step="0.05" />
-                        <label>속도: <span class="vc_cast_rate_val"></span></label>
-                        <input type="range" class="vc_cast_rate" min="0.7" max="1.5" step="0.05" />
-                        <label>Stability: <span class="vc_cast_stab_val"></span></label>
-                        <input type="range" class="vc_cast_stab" min="0" max="1" step="0.05" />
-                        <label>Similarity: <span class="vc_cast_sim_val"></span></label>
-                        <input type="range" class="vc_cast_sim" min="0" max="1" step="0.05" />
-                        <div class="vc_row">
-                            <span class="vc_hint">낮은 Stability = 감정 폭이 크고 들쭉날쭉 · 높으면 차분하고 일정해요.</span>
-                            <div class="menu_button menu_button_icon vc_cast_adv_reset"><i class="fa-solid fa-rotate-left"></i><span>공통 설정 따르기</span></div>
-                        </div>
-                    </div>
                 </div>`);
-            const g = getSettings();
-            const stab = entry.stability ?? null;
-            const sim = entry.similarity ?? null;
-            $row.find('.vc_cast_stab').val(stab ?? g.stability);
-            $row.find('.vc_cast_sim').val(sim ?? g.similarity);
-            $row.find('.vc_cast_stab_val').text(stab === null ? `공통 (${Math.round(g.stability * 100)}%)` : `${Math.round(stab * 100)}%`);
-            $row.find('.vc_cast_sim_val').text(sim === null ? `공통 (${Math.round(g.similarity * 100)}%)` : `${Math.round(sim * 100)}%`);
-            $row.find('.vc_cast_temper').val(entry.temper ?? '');
-            $row.find('.vc_cast_range').val(entry.range ? String(entry.range) : '');
-            $row.find('.vc_cast_range_hint').text(entry.range ? '' : `지금 ${rangeFor(entry)} · ${RANGE_LABELS[rangeFor(entry)]}`);
-            $row.find('.vc_cast_note').val(entry.actingNote ?? '');
-            $row.find('.vc_cast_always').val(entry.alwaysTags ?? '');
-            $row.find('.vc_cast_color').val(/^#[0-9a-f]{6}$/i.test(entry.color ?? '') ? entry.color : '#ffd54f');
-            $row.find('.vc_cast_color').toggleClass('vc_color_unset', !entry.color);
-            const vol = entry.volume ?? null;
-            $row.find('.vc_cast_vol').val(vol ?? 1);
-            $row.find('.vc_cast_vol_val').text(vol === null ? '100%' : `${Math.round(vol * 100)}%`);
-            const crate = entry.rate ?? null;
-            $row.find('.vc_cast_rate').val(crate ?? 1);
-            $row.find('.vc_cast_rate_val').text(crate === null ? '기본 (1배)' : `${Number(crate).toFixed(2).replace(/0$/, '')}배`);
-            if (openAdv.has(`${scope}:${i}`)) $row.find('.vc_cast_adv').show();
             $row.find('.vc_cast_names').val(entry.names ?? '');
             $row.find('.vc_cast_gender').val(entry.gender ?? 'u');
             $list.append($row);
@@ -3801,6 +4145,7 @@ function editorRowHtml() {
             <select class="text_pole vc_e_voice" title="목소리 (자동 = 캐스트 표/성별로 결정)"></select>
             <input type="text" class="text_pole vc_e_tag" placeholder="태그 (예: angry)" title="감정/연기 태그. 비우면 태그 없이 읽어요" />
             <div class="vc_e_btns">
+                <span class="vc_e_has fa-solid fa-circle-check" title="이 줄 음성이 이미 만들어져 있어요 (다시 들어도 크레딧 안 씀)" hidden></span>
                 <div class="vc_icon_btn vc_e_play fa-solid fa-play" title="이 줄만 듣기 (저장된 음성이 있으면 그걸 재생)"></div>
                 <div class="vc_icon_btn vc_e_regen fa-solid fa-dice" title="이 줄 음성 새로 뽑기 (크레딧 사용)"></div>
                 <div class="vc_icon_btn vc_e_up fa-solid fa-arrow-up" title="위로"></div>
@@ -3829,7 +4174,16 @@ function makeEditorRow(line) {
         $row.data('audioKey', line.audioKey);
         $row.data('sig', lineSignature(readEditorRow($row)));
     }
+    updateRowBadge($row);
     return $row;
+}
+
+/** ✓ on rows whose voice is already made (and the line wasn't changed since). */
+function updateRowBadge($row) {
+    const key = $row.data('audioKey');
+    const has = !!key && $row.data('sig') === lineSignature(readEditorRow($row)) && (storeIndex === null || keyHasAudio(key));
+    const el = $row.find('.vc_e_has')[0];
+    if (el) el.hidden = !has;
 }
 
 function lineSignature(line) {
@@ -3912,12 +4266,17 @@ function buildEditor(messageId, script) {
             $row.data('audioKey', line.audioKey);
             $row.data('sig', lineSignature(readEditorRow($row, { ignoreVoice: false })));
         }
+        updateRowBadge($row);
     };
     $editor.on('click', '.vc_e_play', function () {
         previewRow($(this).closest('.vc_edit_row'), false);
     });
     $editor.on('click', '.vc_e_regen', function () {
         previewRow($(this).closest('.vc_edit_row'), true);
+    });
+    // editing a line means its old take no longer matches → hide the ✓
+    $editor.on('input change', '.vc_edit_row input, .vc_edit_row select, .vc_edit_row textarea', function () {
+        updateRowBadge($(this).closest('.vc_edit_row'));
     });
     // keep the "auto" voice label in sync when speaker/gender change
     $editor.on('change', '.vc_e_speaker, .vc_e_gender', function () {
@@ -3934,6 +4293,7 @@ async function openScriptEditor(messageId) {
     const ctx = SillyTavern.getContext();
     if (!ctx.chat[messageId]) return;
     if (!voiceList.length) await loadVoices(false).catch(() => {});
+    await loadIndex();
 
     let script;
     // a stored script opens at once; if it has to be (re)classified, say so instead of looking frozen
@@ -3990,6 +4350,20 @@ async function openScriptEditor(messageId) {
                 toastr.error(String(e.message ?? e), 'MultiCast TTS');
             }
             continue;
+        }
+
+        // only new voice takes (lines heard in the editor), nothing else edited → keep those takes, even on 닫기
+        const withoutAudio = arr => JSON.stringify(arr.map(({ audioKey, ...rest }) => rest));
+        if (changed && withoutAudio(edited) === withoutAudio(script)) {
+            const stored = getStoredEntry(ctx.chat[messageId])?.script;
+            if (Array.isArray(stored) && stored.length === edited.length) {
+                edited.forEach((l, i) => { if (l.audioKey) stored[i].audioKey = l.audioKey; });
+                await ctx.saveChat();
+                redecorateMessage(messageId);
+                script = stored;
+            }
+            if (result === ctx.POPUP_RESULT.AFFIRMATIVE) playMessage(messageId, {});
+            return;
         }
 
         if (result === ctx.POPUP_RESULT.AFFIRMATIVE || result === EDITOR_SAVE_ONLY) {
@@ -4131,7 +4505,8 @@ async function openQuickMenu() {
         { id: 'lang', icon: 'fa-language', label: () => `음성 언어: ${voiceLangLabel()}`, hint: '누를 때마다 화면대로 → 원문 → AI 번역', run: () => cycleVoiceLang() },
         { id: 'solo', icon: 'fa-user', label: () => `1인 모드 (이 봇): ${soloOn() ? '켜짐' : '꺼짐'}`, hint: 'AI 분류 없이 바로 읽기', run: () => setSolo(!soloOn()) },
         { id: 'sfx', icon: 'fa-bell', label: () => `효과음: ${getSettings().sfxEnabled ? '켜짐' : '꺼짐'}`, hint: '', run: () => setSfx(!getSettings().sfxEnabled) },
-        { id: 'saved', icon: 'fa-list', label: () => '저장된 대사 음성 보기', hint: '', run: () => { popup?.completeCancelled?.(); setTimeout(openSavedList, 50); } },
+        { id: 'saved', icon: 'fa-list', label: () => '이 채팅 대사 음성', hint: '', run: () => { popup?.completeCancelled?.(); setTimeout(openSavedList, 50); } },
+        { id: 'all', icon: 'fa-folder-open', label: () => '모든 봇 대사 음성 · ⭐ 즐겨찾기', hint: '봇·캐릭터별로 골라 보기', run: () => { popup?.completeCancelled?.(); setTimeout(() => openAllVoices(), 50); } },
     ];
     const render = () => {
         $box.empty();
@@ -4251,14 +4626,22 @@ function settingsHtml() {
                     <summary class="vc_group_title">▶️ 재생</summary>
                     <div class="vc_group_body">
                 <div class="vc_row">
-                    <label for="voice_cast_pacing">🌬️ 호흡 (대사 사이 쉼)</label>
-                    <select id="voice_cast_pacing" class="text_pole" style="width:auto">
-                        <option value="off">바로 이어서</option>
-                        <option value="natural">자연스럽게</option>
-                        <option value="slow">여유 있게</option>
-                    </select>
+                    <label>🌬️ 호흡 (대사 사이 쉼)</label>
+                    <div class="menu_button vc_pause_preset" data-preset="off">바로</div>
+                    <div class="menu_button vc_pause_preset" data-preset="natural">자연스럽게</div>
+                    <div class="menu_button vc_pause_preset" data-preset="slow">여유 있게</div>
                 </div>
-                <div class="vc_hint">말하는 사람이 바뀌거나 사이에 지문이 길면 그만큼 더 쉬어요 (지문 읽는 시간만큼).</div>
+                <div class="vc_pause_sliders">
+                    <label>같은 사람 다음 줄: <span id="voice_cast_pause_same_val"></span></label>
+                    <input id="voice_cast_pause_same" type="range" min="0" max="1500" step="50" />
+                    <label>말하는 사람이 바뀔 때: <span id="voice_cast_pause_change_val"></span></label>
+                    <input id="voice_cast_pause_change" type="range" min="0" max="2500" step="50" />
+                    <label>사이 지문만큼 더 쉬기: <span id="voice_cast_pause_narr_val"></span></label>
+                    <input id="voice_cast_pause_narr" type="range" min="0" max="3" step="0.1" />
+                    <label>다음 메시지로 넘어갈 때: <span id="voice_cast_pause_between_val"></span></label>
+                    <input id="voice_cast_pause_between" type="range" min="0" max="4000" step="100" />
+                </div>
+                <div class="vc_hint">대사 사이에 쉬는 시간을 직접 맞춰요. '사이 지문만큼'은 두 대사 사이 지문이 길수록 더 쉬어요 (100% = 지문을 읽는 시간쯤).</div>
                 <label class="checkbox_label"><input id="voice_cast_continue" type="checkbox" /><span>이어 듣기</span></label>
                 <div class="vc_hint vc_sub">메시지가 끝나면 다음 메시지로 자동으로 넘어가요</div>
                 <div class="vc_row">
@@ -4396,6 +4779,7 @@ function settingsHtml() {
                 <div class="vc_row">
                     <span id="voice_cast_cache_stats" class="vc_hint"></span>
                     <div id="voice_cast_saved_list" class="menu_button menu_button_icon"><i class="fa-solid fa-list"></i><span>이 채팅 음성 목록</span></div>
+                    <div id="voice_cast_all_list" class="menu_button menu_button_icon"><i class="fa-solid fa-folder-open"></i><span>모든 봇 음성 · ⭐</span></div>
                     <div id="voice_cast_cache_clear" class="menu_button menu_button_icon"><i class="fa-solid fa-broom"></i><span>전부 지우기</span></div>
                 </div>
                 <div class="vc_section_title">📦 설정 옮기기</div>
@@ -4473,6 +4857,7 @@ function bindSettingsUI() {
     $('body').toggleClass('vc_hold_on', !!s.holdToPlay);
     $('#voice_cast_line_btns').on('change', () => refreshLineButtons());
     $('#voice_cast_saved_list').on('click', openSavedList);
+    $('#voice_cast_all_list').on('click', () => openAllVoices());
     $('#voice_cast_quick').on('change', applyQuickButtons);
     bindCheck('#voice_cast_thoughts', 'includeThoughts');
     const syncLangUI = () => {
@@ -4535,10 +4920,32 @@ function bindSettingsUI() {
         s.openGroups = [...set];
         save();
     });
-    $('#voice_cast_pacing').val(s.pacing).on('change', function () {
-        s.pacing = String($(this).val());
+    const pauseFields = [
+        ['#voice_cast_pause_same', 'pauseSame', v => (v ? `${(v / 1000).toFixed(2).replace(/0$/, '')}초` : '안 쉼')],
+        ['#voice_cast_pause_change', 'pauseChange', v => (v ? `${(v / 1000).toFixed(2).replace(/0$/, '')}초` : '안 쉼')],
+        ['#voice_cast_pause_narr', 'pauseNarr', v => (v ? `${Math.round(v * 100)}%` : '안 씀')],
+        ['#voice_cast_pause_between', 'pauseBetween', v => (v ? `${(v / 1000).toFixed(1)}초` : '바로')],
+    ];
+    const syncPause = () => {
+        for (const [id, key, fmt] of pauseFields) {
+            $(id).val(s[key]);
+            $(`${id}_val`).text(fmt(Number(s[key]) || 0));
+        }
+    };
+    for (const [id, key, fmt] of pauseFields) {
+        $(id).on('input', function () {
+            s[key] = Number($(this).val());
+            $(`${id}_val`).text(fmt(s[key]));
+            save();
+        });
+    }
+    $('.vc_pause_preset').on('click', function () {
+        const p = PACING[$(this).data('preset')];
+        Object.assign(s, p ? { pauseSame: p.same, pauseChange: p.change, pauseNarr: p.perChar / 12, pauseBetween: p.between } : { pauseSame: 0, pauseChange: 0, pauseNarr: 0, pauseBetween: 600 });
         save();
+        syncPause();
     });
+    syncPause();
     bindCheck('#voice_cast_continue', 'continuePlay');
     bindCheck('#voice_cast_step', 'stepMode');
     $('#voice_cast_listen_on').on('change', function () {
@@ -4606,7 +5013,7 @@ function bindSettingsUI() {
     refreshCacheStats();
     $('#voice_cast_settings .inline-drawer-toggle').on('click', () => { refreshCacheStats(); renderListenList(); });
     $('#voice_cast_cache_clear').on('click', async () => {
-        const ok = await ctx.Popup.show.confirm('MultiCast TTS', '저장된 음성을 전부 지울까요? 다시 들으면 새로 생성돼요(크레딧 사용).');
+        const ok = await ctx.Popup.show.confirm('MultiCast TTS', '저장된 음성을 전부 지울까요? ⭐ 즐겨찾기한 음성은 남겨요. 다시 들으면 새로 생성돼요(크레딧 사용).');
         if (!ok) return;
         await clearAudioCache();
         refreshCacheStats();
@@ -4677,10 +5084,67 @@ function bindSettingsUI() {
         })
         .on('click', '.vc_cast_adv_toggle', function () {
             const { i, scope } = rowRef(this);
-            const id = `${scope}:${i}`;
-            const $adv = $(this).closest('.vc_cast_row').find('.vc_cast_adv');
-            if (openAdv.has(id)) { openAdv.delete(id); $adv.hide(); } else { openAdv.add(id); $adv.show(); }
-        })
+            openCastAdvPopup(scope, i);
+        });
+    $('#voice_cast_settings')
+        .on('click', '.vc_cast_move', function () {
+            const { list, i, scope } = rowRef(this);
+            if (!list?.[i]) return;
+            const target = castArray(scope === 'bot' ? 'global' : 'bot');
+            if (!target) return;
+            target.push(list.splice(i, 1)[0]);
+            openAdv.clear();
+            save();
+            renderCastList();
+        });
+
+    $('#voice_cast_stop').on('click', stopPlayback);
+    $('#voice_cast_export').on('click', exportSettings);
+    $('#voice_cast_import').on('click', () => $('#voice_cast_import_file').val('').trigger('click'));
+    $('#voice_cast_import_file').on('change', function () {
+        const file = this.files?.[0];
+        if (file) importSettings(file);
+    });
+    $('#voice_cast_show_script').on('click', showLastScript);
+    foldLongHints();
+}
+
+/**
+ * Long grey explanations fold behind a small ⓘ next to the setting they explain (tap to open/close).
+ * Short ones and live status lines (they have an id) stay as they are.
+ */
+function foldLongHints() {
+    $('#voice_cast_settings .vc_hint').each(function () {
+        if (this.id || this.dataset.vcFold || $(this).closest('.vc_cast_row, .vc_custom_sfx_list, .vc_listen_list').length) return;
+        if ((this.textContent || '').trim().length < 40) return;
+        this.dataset.vcFold = '1';
+        this.hidden = true;
+        const hint = this;
+        const $i = $('<span class="vc_info fa-solid fa-circle-info" role="button" tabindex="0" title="설명 보기"></span>');
+        $i.on('click keydown', (e) => {
+            if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();   // inside a <label>: don't flip the checkbox
+            e.stopPropagation();
+            hint.hidden = !hint.hidden;
+            $i.toggleClass('vc_on', !hint.hidden);
+        });
+        const prev = this.previousElementSibling;
+        if (prev && (prev.matches('label, .checkbox_label, .vc_row, .vc_section_title') )) {
+            const $label = prev.matches('.checkbox_label') ? $(prev).find('span').first() : $(prev);
+            $label.append(' ', $i);
+        } else {
+            $(this).before($('<div class="vc_info_row"></div>').append($i, ' <span class="vc_hint">설명</span>'));
+        }
+    });
+}
+
+/** Handlers for the per-character settings panel (lives in its own window). */
+function bindCastAdvHandlers($root) {
+    const rowRef = (el) => {
+        const $row = $(el).closest('.vc_cast_row');
+        return { list: castArray(String($row.data('scope'))), i: Number($row.data('index')), scope: String($row.data('scope')) };
+    };
+    $root
         .on('change', '.vc_cast_temper', function () {
             const { list, i } = rowRef(this);
             if (!list?.[i]) return;
@@ -4773,25 +5237,7 @@ function bindSettingsUI() {
             save();
             renderCastList();
         })
-        .on('click', '.vc_cast_move', function () {
-            const { list, i, scope } = rowRef(this);
-            if (!list?.[i]) return;
-            const target = castArray(scope === 'bot' ? 'global' : 'bot');
-            if (!target) return;
-            target.push(list.splice(i, 1)[0]);
-            openAdv.clear();
-            save();
-            renderCastList();
-        });
-
-    $('#voice_cast_stop').on('click', stopPlayback);
-    $('#voice_cast_export').on('click', exportSettings);
-    $('#voice_cast_import').on('click', () => $('#voice_cast_import_file').val('').trigger('click'));
-    $('#voice_cast_import_file').on('change', function () {
-        const file = this.files?.[0];
-        if (file) importSettings(file);
-    });
-    $('#voice_cast_show_script').on('click', showLastScript);
+        ;
 }
 
 // ---------------------------------------------------------------------------

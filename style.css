@@ -313,7 +313,18 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 
 /* read-along: ▶ for a line that isn't made yet (made when tapped) */
 .vc_line_play.vc_line_new {
-    opacity: 0.35;
+    opacity: 0.3;
+}
+
+/* made already = solid and bright in the theme's text colour; not made yet = faint outline */
+.vc_line_play:not(.vc_line_new):not(.vc_line_loading) {
+    opacity: 0.95;
+    color: var(--SmartThemeBodyColor, inherit);
+}
+.vc_line_play.vc_line_play:hover,
+.vc_line_play.vc_line_play.vc_line_playing {
+    opacity: 1;
+    color: var(--active, #e8a33d);
 }
 
 .vc_line_play.vc_line_loading {
@@ -769,4 +780,109 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 /* 대사 꾹 눌러서 듣기: no iOS callout / long-press menu on chat text */
 body.vc_hold_on #chat .mes_text {
     -webkit-touch-callout: none;
+}
+
+/* 대본 편집기: 이미 만든 음성 표시 */
+.vc_edit_row .vc_e_has {
+    color: var(--SmartThemeQuoteColor, #4caf50);
+    align-self: center;
+    margin-right: 2px;
+}
+.vc_edit_row .vc_e_has[hidden] {
+    display: none;
+}
+
+/* ⭐ 즐겨찾기 */
+.vc_saved_row .vc_clip_fav.vc_on {
+    color: var(--active, #e8a33d);
+    opacity: 1;
+}
+.vc_saved_filters .vc_saved_favonly {
+    white-space: nowrap;
+    margin: 0;
+}
+
+/* 캐릭터 설정 창 (캐스트 ⚙) */
+.vc_cast_popup {
+    text-align: left;
+}
+.vc_cast_popup h3 {
+    margin: 0 0 8px;
+}
+.vc_cast_popup .vc_cast_adv {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.vc_cast_popup .vc_row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.vc_cast_popup .vc_row > label {
+    white-space: nowrap;
+}
+.vc_cast_popup input[type="range"] {
+    width: 100%;
+}
+.vc_cast_popup .vc_cast_always,
+.vc_cast_popup .vc_cast_note {
+    width: 100%;
+    margin: 0;
+}
+.vc_cast_popup .vc_cast_color {
+    width: 36px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+}
+.vc_cast_popup .vc_cast_color.vc_color_unset {
+    opacity: 0.45;
+}
+.vc_cast_popup .vc_hint {
+    opacity: 0.7;
+    font-size: 0.85em;
+}
+
+/* 호흡 슬라이더 */
+#voice_cast_settings .vc_pause_preset {
+    padding: 2px 8px;
+    margin: 0;
+    font-size: 0.85em;
+}
+#voice_cast_settings .vc_pause_sliders {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 2px 0 4px;
+}
+#voice_cast_settings .vc_pause_sliders input[type="range"] {
+    width: 100%;
+}
+
+/* 접힌 설명 ⓘ */
+#voice_cast_settings .vc_info {
+    font-size: 0.8em;
+    opacity: 0.45;
+    cursor: pointer;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+#voice_cast_settings .vc_info:hover,
+#voice_cast_settings .vc_info.vc_on {
+    opacity: 1;
+    color: var(--active, #e8a33d);
+}
+#voice_cast_settings .vc_info_row {
+    margin: 0 0 2px;
+}
+
+.vc_saved_head .vc_switch_list {
+    float: right;
+    padding: 2px 8px;
+    margin: 0;
+    font-size: 0.85em;
 }
