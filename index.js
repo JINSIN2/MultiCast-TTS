@@ -69,6 +69,9 @@ const defaultSettings = Object.freeze({
     player: true,           // bottom mini player (swipe up / tap the little handle)       
     sfxVoiceId: '',
     sfxLocal: true,
+    adultSfx: false,         // 🔞 also tag intimate sounds in adult scenes (kissing, wet sounds, skin slapping …)
+    sfxOverlay: false,       // play sound effects under the voices instead of as their own turn
+    sfxBed: false,           // 배경에 깔기: sound effects loop quietly under the voices until the message ends
     customSfx: [],           // [{ id, name, words }] — user's own sound files (audio kept in IndexedDB, not in settings)          // bundled CC0 sound files first (free, any model); ElevenLabs tag only when nothing fits
     cast: [],        // shared cast (applies to every bot)
     castByBot: {},   // { 'char:<avatar>' | 'group:<id>': [entries] }
@@ -186,7 +189,7 @@ function cleanMessageText(text) {
     return String(text)
         .replace(/```[\s\S]*?```/g, ' ')          // code blocks
         .replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ')
-        .replace(/<\/?v\b[^>]*>/gi, '')            // voice tags vanish without a trace (same text before and after they're stripped)
+        .replace(/<\/?(?:v|sfx)\b[^>]*>/gi, '')    // voice tags vanish without a trace (same text before and after they're stripped)
         .replace(/<[^>]+>/g, ' ')                  // html tags
         .replace(/[ \t]+/g, ' ')
         .trim();
@@ -460,6 +463,11 @@ function knownCharactersList(userName) {
     return known;
 }
 
+const ADULT_SFX_RULE = '- Adult scenes (all characters adults): ALSO add sound entries for intimate sounds the narration describes — e.g. kissing, wet sounds, sucking, licking, skin slapping, bed creaking, heavy breathing, rustling sheets. Use plain short English tags (kiss, wet squelch, slurp, skin slap, bed creak, panting). These may be soft; do not skip them.';
+function sfxLimit() {
+    return getSettings().adultSfx ? 8 : 3;
+}
+
 function buildClassifierPromptFrom(known, userName, text, prevText) {
     const s = getSettings();
 
@@ -487,7 +495,8 @@ function buildClassifierPromptFrom(known, userName, text, prevText) {
         `- Every speaker has an emotional range from 1 (very restrained) to 5 (very expressive). Characters in the known list show theirs; anyone else uses ${GLOBAL_RANGE[s.emotionLevel] ?? 3}/5.`,
         EMOTION_LADDERS,
         ...(s.sfxEnabled ? [
-            '- Sound effects: when the NARRATION clearly describes a distinct, audible sound (e.g. a door creaking or slamming, footsteps, thunder rumbling, clapping, a dog barking, glass shattering, a loud knock, a gunshot), add a SEPARATE entry at the point where it happens: {"speaker":"SFX","gender":"u","type":"sfx","tag":"","text":"[door creaking]"}. "text" is ONE short English sound tag in square brackets. At most 3 per message. Skip quiet or vague sounds, and never put sound tags inside dialogue lines.',
+            `- Sound effects: when the NARRATION clearly describes a distinct, audible sound (e.g. a door creaking or slamming, footsteps, thunder rumbling, clapping, a dog barking, glass shattering, a loud knock, a gunshot), add a SEPARATE entry at the point where it happens: {"speaker":"SFX","gender":"u","type":"sfx","tag":"","text":"[door creaking]"}. "text" is ONE short English sound tag in square brackets. At most ${sfxLimit()} per message. Skip quiet or vague sounds, and never put sound tags inside dialogue lines.`,
+            ...(s.adultSfx ? [ADULT_SFX_RULE] : []),
             `- Prefer these sound tags when one fits: ${[...customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))), SFX_TAG_HINT].join(', ')}.`,
         ] : []),
         '- Also follow each character\'s temperament and acting note (a calm character stays composed; a hot-tempered one reacts sooner and stronger, within their range).',
@@ -769,7 +778,8 @@ function buildFastPrompt(text, segs, prevText, userName) {
             '- ONLY when an *asterisk* piece is clearly a character\'s inner thought (first-person thinking), output: number|speaker|gender|tag|thought',
         ] : []),
         ...(s.sfxEnabled ? [
-            '- Sound effects: when the NARRATION clearly describes a distinct, audible sound (a door slamming, footsteps, thunder, glass shattering, a knock, a gunshot), add a line S|after|sound where "after" is the number of the quote it comes after (0 = before the first quote) and "sound" is ONE short English sound tag. At most 3. Skip quiet or vague sounds.',
+            `- Sound effects: when the NARRATION clearly describes a distinct, audible sound (a door slamming, footsteps, thunder, glass shattering, a knock, a gunshot), add a line S|after|sound where "after" is the number of the quote it comes after (0 = before the first quote) and "sound" is ONE short English sound tag. At most ${sfxLimit()}. Skip quiet or vague sounds.`,
+            ...(s.adultSfx ? [ADULT_SFX_RULE] : []),
             `- Prefer these sound tags when one fits: ${[...customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))), SFX_TAG_HINT].join(', ')}.`,
         ] : []),
         '- Output ONLY these lines. No prose, no JSON, no code fences.',
@@ -820,7 +830,7 @@ function parseFastOutput(raw, segs) {
     }
     const script = [];
     const pushSfx = (after) => {
-        for (const tag of (sfxAfter.get(after) ?? []).slice(0, 3)) {
+        for (const tag of (sfxAfter.get(after) ?? []).slice(0, sfxLimit())) {
             script.push({ speaker: 'SFX', gender: 'u', type: 'sfx', tag: '', text: `[${tag}]` });
         }
     };
@@ -862,6 +872,11 @@ function inlineTagInstruction() {
         '- n = the exact name of who speaks (unnamed side characters: a short English label like waiter).',
         '- e = ONE short English word for HOW it is said (e.g. calm, warm, teasing, nervous, irritated, angry, whispering, laughing); leave it empty when neutral.',
         ...(s.includeThoughts ? ['- A character\'s inner thought written in *asterisks* gets t="1": <v n="Name" e="wistful" t="1">*the thought*</v>. Never tag narration or actions.'] : ['- Never tag narration, actions, or thoughts.']),
+        ...(s.sfxEnabled ? [
+            `- Where the narration describes a distinct audible sound (a door slam, footsteps, a gunshot, thunder …), put <sfx n="door slam"/> right at that spot — ONE short English sound tag. At most ${sfxLimit()} per reply.`,
+            ...(s.adultSfx ? ['- In adult scenes (all characters adults), also mark intimate sounds the same way: kiss, wet squelch, slurp, lick, skin slap, bed creak, panting, sheets rustle.'] : []),
+            ...(customSfxLibrary().length ? [`- Prefer these sound tags when one fits: ${customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))).slice(0, 40).join(', ')}.`] : []),
+        ] : []),
         '- One tag per quote. Write everything else exactly as you normally would. The tags are hidden from the reader; never mention them.',
     ].join('\n');
 }
@@ -879,6 +894,8 @@ function updateInlinePrompt() {
 }
 
 const VOICE_TAG_RE = /<v\b([^>]*)>([\s\S]*?)<\/v\s*>/gi;
+const SFX_TAG_RE = /<sfx\b([^>]*?)\/?>(?:\s*<\/sfx\s*>)?/gi;
+const VOICE_OR_SFX_RE = /<v\b([^>]*)>([\s\S]*?)<\/v\s*>|<sfx\b([^>]*?)\/?>(?:\s*<\/sfx\s*>)?/gi;
 
 function voiceTagAttr(attrs, name) {
     const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs);
@@ -888,7 +905,13 @@ function voiceTagAttr(attrs, name) {
 /** Lines from <v> tags in a raw message, in order: { speaker, tag, thought, text }. */
 function parseVoiceTags(raw) {
     const out = [];
-    for (const m of String(raw ?? '').matchAll(VOICE_TAG_RE)) {
+    for (const m of String(raw ?? '').matchAll(VOICE_OR_SFX_RE)) {
+        if (m[3] !== undefined) {
+            // <sfx n="door slam"/> — a sound effect at this spot
+            const tag = voiceTagAttr(m[3], 'n').replace(/[[\]]/g, '').trim();
+            if (tag) out.push({ sfx: true, text: `[${tag}]` });
+            continue;
+        }
         const inner = cleanMessageText(m[2]).replace(/^[\s"\u201C\u300C\u300E*]+|[\s"\u201D\u300D\u300F*]+$/g, '').trim();
         if (!/\p{L}/u.test(inner)) continue;
         out.push({
@@ -906,7 +929,7 @@ function parseVoiceTags(raw) {
  * (then the classifier runs as usual). With a translation on screen, speakers carry over by order.
  */
 /** Formatting tags that wrap story text (kept); any other paired tag is a side block (<choices>, status, variables…). */
-const STORY_TAGS = new Set(['v', 'span', 'font', 'b', 'i', 'em', 'strong', 'u', 's', 'del', 'p', 'q', 'small', 'big', 'mark', 'sub', 'sup', 'br', 'center']);
+const STORY_TAGS = new Set(['v', 'sfx', 'span', 'font', 'b', 'i', 'em', 'strong', 'u', 's', 'del', 'p', 'q', 'small', 'big', 'mark', 'sub', 'sup', 'br', 'center']);
 
 /** The story text only: drops side blocks like <choices>…</choices> or <UpdateVariable>…</UpdateVariable>. */
 function stripSideBlocks(raw) {
@@ -927,7 +950,10 @@ function stripSideBlocks(raw) {
 function scriptFromVoiceTags(message, text) {
     const tagged = parseVoiceTags(stripSideBlocks(message?.mes));
     if (!tagged.length) return null;
-    const speech = tagged.filter(t => !t.thought);
+    const speech = tagged.filter(t => !t.thought && !t.sfx);
+    const s = getSettings();
+    let sfxLeft = s.sfxEnabled ? sfxLimit() : 0;
+    const keepSfx = () => (sfxLeft-- > 0);
     const flat = t => normForMatch(t).replace(/\s+/g, '');
     const shownIsOriginal = flat(cleanMessageText(String(message.mes).replace(VOICE_TAG_RE, '$2'))) === flat(text);
     let shownRaw = message.mes;
@@ -938,6 +964,7 @@ function scriptFromVoiceTags(message, text) {
     }
     const quotes = quoteSegments(cleanMessageText(stripSideBlocks(shownRaw)));
     const toLine = (t, lineText) => {
+        if (t.sfx) return { speaker: 'SFX', gender: 'u', type: 'sfx', tag: '', text: t.text };
         const g = findCastEntry(t.speaker)?.gender;
         return {
             speaker: t.speaker,
@@ -950,11 +977,18 @@ function scriptFromVoiceTags(message, text) {
     if (shownIsOriginal) {
         // every quote in the story should have been tagged
         if (speech.length < quotes.length) return null;
-        return tagged.filter(t => !t.thought || getSettings().includeThoughts).map(t => toLine(t, t.text));
+        return tagged.filter(t => (t.sfx ? keepSfx() : (!t.thought || s.includeThoughts))).map(t => toLine(t, t.text));
     }
     // reading a translation: same number of quotes → the n-th tag belongs to the n-th translated quote
     if (speech.length !== quotes.length || !quotes.length) return null;
-    return speech.map((t, i) => toLine(t, quotes[i].text));
+    let k = 0;
+    const out = [];
+    for (const t of tagged) {
+        if (t.sfx) { if (keepSfx()) out.push(toLine(t)); continue; }
+        if (t.thought) continue;
+        out.push(toLine(t, quotes[k++].text));
+    }
+    return out;
 }
 
 /** Some setups show tags as text instead of hiding them — strip any visible <v ...> / </v>. */
@@ -963,9 +997,9 @@ function hideVoiceTagText(root) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const hits = [];
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-        if (/<\/?v\b[^<>]*>/i.test(n.nodeValue ?? '')) hits.push(n);
+        if (/<\/?(?:v|sfx)\b[^<>]*>/i.test(n.nodeValue ?? '')) hits.push(n);
     }
-    for (const n of hits) n.nodeValue = n.nodeValue.replace(/<\/?v\b[^<>]*>/gi, '');
+    for (const n of hits) n.nodeValue = n.nodeValue.replace(/<\/?(?:v|sfx)\b[^<>]*>/gi, '');
 }
 
 async function runFastClassifier(text, segs, prevText, userName) {
@@ -1074,7 +1108,7 @@ async function getScriptInner(messageId, { force = false } = {}) {
 }
 
 function stripVoiceTagsFromMessage(message) {
-    const strip = t => String(t).replace(VOICE_TAG_RE, '$2');
+    const strip = t => String(t).replace(VOICE_TAG_RE, '$2').replace(SFX_TAG_RE, '');
     const before = message.mes;
     message.mes = strip(before);
     // the open swipe keeps its own copy of the text
@@ -1223,7 +1257,9 @@ function sfxWords(text) {
 
 /** The user's own sounds as library entries (their keywords, or the name when no keywords). */
 function customSfxLibrary() {
-    return (getSettings().customSfx ?? []).filter(c => c?.id).map(c => {
+    // 🔞 sounds only exist while 🔞 성인 효과음 is on: never offered to the AI, never matched otherwise
+    const adultOn = !!getSettings().adultSfx;
+    return (getSettings().customSfx ?? []).filter(c => c?.id && (adultOn || !c.adult)).map(c => {
         const words = String(c.words || c.name || '').split(',').map(w => w.trim()).filter(Boolean);
         return { files: [CUSTOM_SFX_PREFIX + c.id], words };
     });
@@ -1253,12 +1289,17 @@ function matchSfx(words, library) {
             if (!phrase.length) continue; // e.g. a Korean-only name: nothing to match on
             // each phrase word must start a word in the tag, in order and next to each other ("slam" ↔ "slamming")
             let hit = false;
-            for (let i = 0; i + phrase.length <= words.length && !hit; i++) {
-                hit = phrase.every((p, j) => words[i + j].startsWith(p));
+            let exact = false;
+            for (let i = 0; i + phrase.length <= words.length && !exact; i++) {
+                if (phrase.every((p, j) => words[i + j].startsWith(p))) {
+                    hit = true;
+                    exact = phrase.every((p, j) => words[i + j] === p);
+                }
             }
             if (!hit) continue;
             if (!entry.files.length) return '';
-            const score = phrase.length * (weak ? 0.5 : 1);
+            // an exact word wins over a word that only starts the same ("spanking" → the 'spanking' sound, not 'spank')
+            const score = phrase.length * (weak ? 0.5 : 1) + (exact ? 0.25 : 0);
             if (score > bestScore) { bestScore = score; best = entry; }
         }
     }
@@ -1364,10 +1405,19 @@ function rememberUrl(key, blob) {
     return url;
 }
 
-async function getCachedAudio(key) {
+/** A 🔞 sound of my own while 🔞 성인 효과음 is off → stays silent (and is never remade with credits). */
+function isBlockedAdultKey(key) {
+    if (getSettings().adultSfx || !key || !isLocalSfxKey(key)) return false;
+    const id = customSfxIdFromKey(key);
+    return !!id && (getSettings().customSfx ?? []).some(c => String(c.id) === String(id) && c.adult);
+}
+
+async function getCachedAudio(key, { preview = false } = {}) {
     if (isLocalSfxKey(key)) {
         const customId = customSfxIdFromKey(key);
         if (!customId) return SFX_BASE + encodeURIComponent(key.slice(SFX_KEY_PREFIX.length)) + '.mp3';
+        // a 🔞 sound saved in an old script stays silent while 🔞 성인 효과음 is off
+        if (!preview && isBlockedAdultKey(key)) return null;
         if (memoryUrls.has(key)) return memoryUrls.get(key);
         try {
             const blob = await getCustomSfxStore()?.getItem(customId);
@@ -2430,10 +2480,70 @@ function togglePause() {
     paused = !paused;
     if (paused) currentAudio?.pause();
     else currentAudio?.play().catch(() => {});
+    for (const a of bedAudios) { if (paused) a.pause(); else a.play().catch(() => {}); }
     updatePlayer();
 }
 
+// 효과음 겹쳐 재생: sounds that play under the voices (not waited for)
+const overlayAudios = new Set();
+function playOverlay(url, line) {
+    const audio = new Audio(url);
+    const master = Number(getSettings().volume);
+    audio.volume = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.85));
+    overlayAudios.add(audio);
+    const done = () => overlayAudios.delete(audio);
+    audio.onended = done;
+    audio.onerror = done;
+    audio.play().catch(done);
+}
+
+// 배경에 깔기: a sound loops quietly (30%) under the voices until the message ends, then fades out.
+// Short hits (door slam, < 1.5s) just play once instead of looping.
+const bedAudios = new Set();
+function fadeAudio(audio, to, ms, then) {
+    const from = audio.volume;
+    const t0 = performance.now();
+    clearInterval(audio._vcFade);
+    audio._vcFade = setInterval(() => {
+        const k = Math.min(1, (performance.now() - t0) / ms);
+        audio.volume = Math.min(1, Math.max(0, from + (to - from) * k));
+        if (k >= 1) { clearInterval(audio._vcFade); then?.(); }
+    }, 40);
+}
+function playBed(url, line) {
+    const master = Number(getSettings().volume);
+    const target = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.3));
+    const audio = new Audio(url);
+    audio.volume = 0;
+    const done = () => { clearInterval(audio._vcFade); bedAudios.delete(audio); };
+    audio.onerror = done;
+    audio.onloadedmetadata = () => {
+        if (Number.isFinite(audio.duration) && audio.duration < 1.5) {
+            audio.loop = false;
+            audio.volume = Math.min(1, target / 0.3 * 0.85); // a short hit: once, at normal overlay volume
+            audio.onended = done;
+        }
+    };
+    audio.loop = true;
+    // a new bed sound takes over from the one before (crossfade), so loops never pile up
+    for (const old of bedAudios) if (old.loop) stopBed(old, 800);
+    bedAudios.add(audio);
+    audio.play().then(() => { if (audio.loop) fadeAudio(audio, target, 400); }).catch(done);
+}
+function stopBed(audio, ms) {
+    fadeAudio(audio, 0, ms, () => { audio.pause(); bedAudios.delete(audio); });
+}
+function stopAllBeds(ms = 0) {
+    for (const a of [...bedAudios]) {
+        if (ms > 0 && !a.paused) stopBed(a, ms);
+        else { clearInterval(a._vcFade); a.pause(); bedAudios.delete(a); }
+    }
+}
+
 function stopPlayback() {
+    for (const a of overlayAudios) a.pause();
+    overlayAudios.clear();
+    stopAllBeds(300);
     session++;
     paused = false;
     setNowPlaying(null);
@@ -2549,6 +2659,7 @@ function synthesizeAll(lines, isActive, onProgress = null) {
             try {
                 // 1) audio already pinned to this script line → replay it exactly, whatever the settings are now
                 if (src?.audioKey && !src._fresh) {
+                    if (isBlockedAdultKey(src.audioKey)) { finish(i, null); continue; }
                     const pinned = await getCachedAudio(src.audioKey);
                     if (pinned) {
                         finish(i, pinned);
@@ -2784,6 +2895,14 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             if (mySession !== session || generationAtStart !== generationEpoch) return;
             if (!url) continue;
             const lineText = lines[i].src.orig ?? lines[i].src.text;
+            // 겹쳐 재생: a sound effect starts and the next line follows right away
+            if (lines[i].src.type === 'sfx' && (getSettings().sfxBed || getSettings().sfxOverlay)) {
+                await waitWhilePaused(mySession, generationAtStart);
+                if (mySession !== session || generationAtStart !== generationEpoch) return;
+                if (getSettings().sfxBed) playBed(url, lines[i].src);
+                else playOverlay(url, lines[i].src);
+                continue;
+            }
             if (jumped) {
                 // jumped with ⏮/⏭: no breathing pause, and search the highlight from the right spot
                 jumped = false;
@@ -2834,6 +2953,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
         if (mySession === session) setStatus(messageId, '<i class="fa-solid fa-triangle-exclamation"></i> 실패', 'error');
     } finally {
         if (mySession === session) {
+            stopAllBeds(1800); // 배경에 깔린 소리: fade out as the message ends
             clearHighlight();
             if (messageId !== null) {
                 setButtonState(messageId, false);
@@ -3112,6 +3232,7 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
     // show which line was picked right away (the voice may still need a few seconds to be made)
     const pickRoot = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
     highlightLine(messageId, line.orig ?? line.text, line, pickRoot ? cursorBefore(pickRoot, messageId, storedScript, index) : 0);
+    if (isBlockedAdultKey(line.audioKey)) { clearHighlight(); return; }
     let url = line.audioKey ? await getCachedAudio(line.audioKey) : null;
     if (mySession !== session || generationAtStart !== generationEpoch) return;
     if (!url) {
@@ -3821,6 +3942,7 @@ function renderCustomSfxList() {
                 <div class="vc_icon_btn vc_custom_sfx_play fa-solid fa-play" title="들어보기"></div>
                 <input class="text_pole vc_custom_sfx_name" type="text" placeholder="이름" />
                 <input class="text_pole vc_custom_sfx_words" type="text" placeholder="영어 단어 (쉼표로)" />
+                <div class="vc_icon_btn vc_custom_sfx_adult" title="🔞 성인 소리 (🔞 성인 효과음을 켰을 때만 나와요)" style="font-size:0.9em;opacity:${c.adult ? 1 : 0.3};filter:${c.adult ? 'none' : 'grayscale(1)'}">🔞</div>
                 <div class="vc_icon_btn vc_custom_sfx_del fa-solid fa-trash-can" title="지우기"></div>
             </div>`);
         $row.find('.vc_custom_sfx_name').val(c.name ?? '');
@@ -3867,6 +3989,13 @@ function bindCustomSfxUI() {
             toastr.success(`내 효과음 ${added}개를 추가했어요. 영어 단어를 확인해 주세요.`, 'MultiCast TTS');
         }
     });
+    $('#voice_cast_custom_sfx_export').on('click', exportSfxPack);
+    $('#voice_cast_custom_sfx_import').on('click', () => $('#voice_cast_custom_sfx_pack').trigger('click'));
+    $('#voice_cast_custom_sfx_pack').on('change', async function () {
+        const file = this.files?.[0];
+        this.value = '';
+        if (file) await importSfxPack(file);
+    });
     $('#voice_cast_custom_sfx_list')
         .on('input change', '.vc_custom_sfx_name, .vc_custom_sfx_words', function () {
             const id = $(this).closest('.vc_custom_sfx_row').data('id');
@@ -3875,10 +4004,20 @@ function bindCustomSfxUI() {
             if ($(this).hasClass('vc_custom_sfx_name')) c.name = String($(this).val());
             else c.words = String($(this).val());
             save();
+            if (!$(this).hasClass('vc_custom_sfx_name')) setTimeout(updateInlinePrompt, 0);
+        })
+        .on('click', '.vc_custom_sfx_adult', function () {
+            const id = $(this).closest('.vc_custom_sfx_row').data('id');
+            const c = s.customSfx.find(x => String(x.id) === String(id));
+            if (!c) return;
+            c.adult = !c.adult;
+            save();
+            $(this).css({ opacity: c.adult ? 1 : 0.3, filter: c.adult ? 'none' : 'grayscale(1)' });
+            setTimeout(updateInlinePrompt, 0);
         })
         .on('click', '.vc_custom_sfx_play', async function () {
             const id = $(this).closest('.vc_custom_sfx_row').data('id');
-            const url = await getCachedAudio(SFX_KEY_PREFIX + CUSTOM_SFX_PREFIX + id);
+            const url = await getCachedAudio(SFX_KEY_PREFIX + CUSTOM_SFX_PREFIX + id, { preview: true });
             if (!url) {
                 toastr.warning('파일을 찾을 수 없어요. 지우고 다시 추가해 주세요.', 'MultiCast TTS');
                 return;
@@ -3900,6 +4039,108 @@ function bindCustomSfxUI() {
             }
             renderCustomSfxList();
         });
+}
+
+// 효과음 팩: all of 내 효과음 (sound + words + 🔞) in one .json file, to carry to another device
+const SFX_PACK_FORMAT = 'multicast-tts-sfx-pack';
+
+function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(blob);
+    });
+}
+
+function dataUrlToBlob(dataUrl) {
+    const m = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(String(dataUrl ?? ''));
+    if (!m) return null;
+    const type = m[1] || 'audio/mpeg';
+    if (!m[2]) return new Blob([decodeURIComponent(m[3])], { type });
+    const bin = atob(m[3]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type });
+}
+
+async function exportSfxPack() {
+    const list = getSettings().customSfx ?? [];
+    const st = getCustomSfxStore();
+    if (!list.length || !st) {
+        toastr.info('내보낼 내 효과음이 없어요.', 'MultiCast TTS');
+        return;
+    }
+    const sounds = [];
+    for (const c of list) {
+        try {
+            const blob = await st.getItem(c.id);
+            if (!blob) continue;
+            sounds.push({ name: c.name ?? '', words: c.words ?? '', adult: !!c.adult, data: await blobToDataUrl(blob) });
+        } catch (e) {
+            console.warn(LOG, 'pack export: skipped', c.name, e);
+        }
+    }
+    if (!sounds.length) {
+        toastr.warning('소리 파일을 읽지 못했어요.', 'MultiCast TTS');
+        return;
+    }
+    const json = JSON.stringify({ format: SFX_PACK_FORMAT, version: 1, sounds });
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const a = document.createElement('a');
+    const d = new Date();
+    a.href = url;
+    a.download = `MultiCast_SFX_${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toastr.success(`효과음 ${sounds.length}개를 팩 파일로 저장했어요.`, 'MultiCast TTS');
+}
+
+async function importSfxPack(file) {
+    const s = getSettings();
+    if (!Array.isArray(s.customSfx)) s.customSfx = [];
+    const st = getCustomSfxStore();
+    if (!st) {
+        toastr.error('이 브라우저에서는 파일을 저장할 수 없어요.', 'MultiCast TTS');
+        return;
+    }
+    let pack;
+    try {
+        pack = JSON.parse(await file.text());
+    } catch {
+        pack = null;
+    }
+    if (!pack || pack.format !== SFX_PACK_FORMAT || !Array.isArray(pack.sounds)) {
+        toastr.error('MultiCast TTS 효과음 팩 파일이 아니에요.', 'MultiCast TTS');
+        return;
+    }
+    let added = 0;
+    let skipped = 0;
+    for (const snd of pack.sounds) {
+        const name = String(snd?.name ?? '').slice(0, 80);
+        const words = String(snd?.words ?? '').slice(0, 300);
+        // already have the same sound (same name + words) → skip, so loading a pack twice doesn't double it
+        if (s.customSfx.some(c => (c.name ?? '') === name && (c.words ?? '') === words)) { skipped++; continue; }
+        const blob = dataUrlToBlob(snd?.data);
+        if (!blob || !/^audio\//.test(blob.type) || blob.size > CUSTOM_SFX_MAX_MB * 1024 * 1024) { skipped++; continue; }
+        const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        try {
+            await st.setItem(id, blob);
+        } catch (e) {
+            console.warn(LOG, e);
+            skipped++;
+            continue;
+        }
+        s.customSfx.push({ id, name, words, ...(snd?.adult ? { adult: true } : {}) });
+        added++;
+    }
+    save();
+    renderCustomSfxList();
+    setTimeout(updateInlinePrompt, 0);
+    if (added) toastr.success(`효과음 ${added}개를 불러왔어요.${skipped ? ` (${skipped}개는 이미 있거나 못 읽어서 건너뜀)` : ''}`, 'MultiCast TTS');
+    else toastr.info('새로 넣을 효과음이 없었어요. (이미 다 있어요)', 'MultiCast TTS');
 }
 
 function renderVoiceSelects() {
@@ -4483,6 +4724,7 @@ function cycleVoiceLang() {
 function setSfx(on) {
     getSettings().sfxEnabled = !!on;
     save();
+    updateInlinePrompt();
     $('#voice_cast_sfx').prop('checked', !!on);
     updateWandItem();
     if (on && !modelInfo(getSettings().model).tags) {
@@ -4777,16 +5019,27 @@ function settingsHtml() {
                     <div class="vc_group_body">
                 <label class="checkbox_label"><input id="voice_cast_sfx" type="checkbox" /><span>효과음 넣기</span></label>
                 <div class="vc_hint vc_sub">지문의 문 쾅, 발소리 같은 소리를 대본에 따로 한 줄로 넣어요</div>
+                <label class="checkbox_label"><input id="voice_cast_sfx_overlay" type="checkbox" /><span>효과음을 대사랑 겹쳐서 재생</span></label>
+                <div class="vc_hint vc_sub">효과음이 따로 차례를 기다리지 않고 대사 밑에 깔려요</div>
+                <label class="checkbox_label"><input id="voice_cast_sfx_bed" type="checkbox" /><span>🔁 효과음을 배경에 계속 깔기</span></label>
+                <div class="vc_hint vc_sub">숨소리·빗소리처럼 긴 소리는 그 메시지가 끝날 때까지 작게(대사의 30%) 반복되다가 스르륵 꺼져요. 새 효과음이 나오면 그걸로 바뀌어요. 문 쾅 같은 짧은 소리는 한 번만 나요.</div>
+                <label class="checkbox_label"><input id="voice_cast_sfx_adult" type="checkbox" /><span>🔞 성인 장면 효과음도 넣기</span></label>
+                <div class="vc_hint vc_sub">키스·젖은 소리·살 부딪히는 소리 같은 것도 효과음 줄로 넣어요. 소리 파일은 아래 '내 효과음'에 직접 넣고 영어 단어(kiss, wet, slap, slurp …)를 붙인 뒤 🔞 버튼을 켜주세요. 🔞 켠 소리는 이 옵션이 켜져 있을 때만 나와요. 한 메시지에 최대 8개까지 넣어요. 분류 AI나 ElevenLabs가 거절하면 안 나올 수 있어요.</div>
                 <label class="checkbox_label"><input id="voice_cast_sfx_local" type="checkbox" /><span>내장 효과음 파일 먼저 쓰기</span></label>
                 <div class="vc_hint vc_sub">문, 발소리, 총소리, 천둥 등 47개 소리가 들어 있어요. 크레딧을 안 쓰고 어느 모델에서나 나와요.</div>
                 <div class="vc_hint">내장 소리에 맞는 게 없으면 ElevenLabs [태그]로 만들어요. 이건 Eleven v3 / v4 / v4 Turbo처럼 [태그]를 아는 모델에서만 나와요. 효과음은 대사와 섞지 않고 대본에 🔔 효과음 줄로 따로 들어가서, 편집기에서 고치거나 지울 수 있어요. 켠 뒤 새로 분류하는 메시지부터 들어가요.</div>
                 <div class="vc_custom_sfx">
-                    <div class="vc_row vc_custom_sfx_head">
+                    <div class="vc_row vc_custom_sfx_head" style="flex-wrap:wrap;gap:4px">
                         <b>🎧 내 효과음</b>
-                        <div id="voice_cast_custom_sfx_add" class="menu_button menu_button_icon" title="내 기기의 소리 파일을 추가해요"><i class="fa-solid fa-plus"></i><span>파일 추가</span></div>
+                        <div style="display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end">
+                            <div id="voice_cast_custom_sfx_add" class="menu_button menu_button_icon" title="내 기기의 소리 파일을 추가해요"><i class="fa-solid fa-plus"></i><span>파일 추가</span></div>
+                            <div id="voice_cast_custom_sfx_import" class="menu_button menu_button_icon" title="효과음 팩 파일(.json)을 불러와요 — 소리·단어·🔞 설정이 한 번에 들어가요"><i class="fa-solid fa-file-import"></i><span>팩 불러오기</span></div>
+                            <div id="voice_cast_custom_sfx_export" class="menu_button menu_button_icon" title="내 효과음 전부를 팩 파일 하나로 저장해요 — 다른 기기에서 불러오기로 옮길 수 있어요"><i class="fa-solid fa-file-export"></i><span>팩 내보내기</span></div>
+                        </div>
                         <input id="voice_cast_custom_sfx_file" type="file" accept="audio/*" multiple hidden />
+                        <input id="voice_cast_custom_sfx_pack" type="file" accept=".json,application/json" hidden />
                     </div>
-                    <div class="vc_hint">내장 소리보다 먼저 써요. 오른쪽 칸에 이 소리가 나올 <b>영어 단어</b>를 쉼표로 적어주세요 (예: phone ring, ringtone). 파일은 이 브라우저에만 저장돼요. 다른 기기에서는 다시 추가해야 해요.</div>
+                    <div class="vc_hint">내장 소리보다 먼저 써요. 오른쪽 칸에 이 소리가 나올 <b>영어 단어</b>를 쉼표로 적어주세요 (예: phone ring, ringtone). 파일은 이 브라우저에만 저장돼요. 다른 기기(폰 등)로 옮길 땐 <b>팩 내보내기</b>로 파일 하나를 만들어서 거기서 <b>팩 불러오기</b> 하면 소리·단어·🔞 설정이 한 번에 들어가요.</div>
                     <div id="voice_cast_custom_sfx_list" class="vc_custom_sfx_list"></div>
                 </div>
                 <label for="voice_cast_sfx_voice">효과음에 쓸 목소리 (비우면 '성별 모름' 목소리)</label>
@@ -5070,6 +5323,10 @@ function bindSettingsUI() {
     $('#voice_cast_sfx_voice').on('change', function () { s.sfxVoiceId = String($(this).val()); save(); });
     bindCustomSfxUI();
     $('#voice_cast_sfx_local').prop('checked', s.sfxLocal !== false).on('change', function () { s.sfxLocal = !!this.checked; save(); });
+    bindCheck('#voice_cast_sfx_overlay', 'sfxOverlay');
+    bindCheck('#voice_cast_sfx_bed', 'sfxBed');
+    bindCheck('#voice_cast_sfx_adult', 'adultSfx');
+    $('#voice_cast_sfx_adult').on('change', () => setTimeout(updateInlinePrompt, 0));
     $('#voice_cast_sfx').prop('checked', !!s.sfxEnabled).on('change', function () { setSfx($(this).prop('checked')); });
     $('#voice_cast_load_voices').on('click', () => loadVoices(true).catch(() => {}));
     $('#voice_cast_check').on('click', checkConnection);
@@ -5384,6 +5641,8 @@ jQuery(async () => {
     $(document).on('click', '.vc_status', (e) => { e.stopPropagation(); stopPlayback(); });
 
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
+    // the instruction depends on several settings (효과음, 성인, 내 효과음…) → refresh it right before each reply
+    if (event_types.GENERATION_STARTED) eventSource.on(event_types.GENERATION_STARTED, updateInlinePrompt);
     eventSource.on(event_types.CHAT_CHANGED, () => {
         stopPlayback();
         setTimeout(injectButtons, 100);
