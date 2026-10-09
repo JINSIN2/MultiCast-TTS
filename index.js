@@ -71,7 +71,6 @@ const defaultSettings = Object.freeze({
     sfxLocal: true,
     adultSfx: false,         // 🔞 also tag intimate sounds in adult scenes (kissing, wet sounds, skin slapping …)
     sfxOverlay: false,       // play sound effects under the voices instead of as their own turn
-    sfxBed: false,           // 배경에 깔기: sound effects loop quietly under the voices until the message ends
     customSfx: [],           // [{ id, name, words }] — user's own sound files (audio kept in IndexedDB, not in settings)          // bundled CC0 sound files first (free, any model); ElevenLabs tag only when nothing fits
     cast: [],        // shared cast (applies to every bot)
     castByBot: {},   // { 'char:<avatar>' | 'group:<id>': [entries] }
@@ -2497,9 +2496,13 @@ function playOverlay(url, line) {
     audio.play().catch(done);
 }
 
-// 배경에 깔기: a sound loops quietly (30%) under the voices until the message ends, then fades out.
-// Short hits (door slam, < 1.5s) just play once instead of looping.
+// 🔁 반복: a sound of mine marked 🔁 loops quietly (30%) under the voices until the message ends, then fades out.
 const bedAudios = new Set();
+function isLoopSfxKey(key) {
+    if (!key || !isLocalSfxKey(key)) return false;
+    const id = customSfxIdFromKey(key);
+    return !!id && (getSettings().customSfx ?? []).some(c => String(c.id) === String(id) && c.loop);
+}
 function fadeAudio(audio, to, ms, then) {
     const from = audio.volume;
     const t0 = performance.now();
@@ -2517,18 +2520,11 @@ function playBed(url, line) {
     audio.volume = 0;
     const done = () => { clearInterval(audio._vcFade); bedAudios.delete(audio); };
     audio.onerror = done;
-    audio.onloadedmetadata = () => {
-        if (Number.isFinite(audio.duration) && audio.duration < 1.5) {
-            audio.loop = false;
-            audio.volume = Math.min(1, target / 0.3 * 0.85); // a short hit: once, at normal overlay volume
-            audio.onended = done;
-        }
-    };
     audio.loop = true;
     // a new bed sound takes over from the one before (crossfade), so loops never pile up
     for (const old of bedAudios) if (old.loop) stopBed(old, 800);
     bedAudios.add(audio);
-    audio.play().then(() => { if (audio.loop) fadeAudio(audio, target, 400); }).catch(done);
+    audio.play().then(() => fadeAudio(audio, target, 400)).catch(done);
 }
 function stopBed(audio, ms) {
     fadeAudio(audio, 0, ms, () => { audio.pause(); bedAudios.delete(audio); });
@@ -2896,10 +2892,11 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             if (!url) continue;
             const lineText = lines[i].src.orig ?? lines[i].src.text;
             // 겹쳐 재생: a sound effect starts and the next line follows right away
-            if (lines[i].src.type === 'sfx' && (getSettings().sfxBed || getSettings().sfxOverlay)) {
+            const loopSfx = lines[i].src.type === 'sfx' && isLoopSfxKey(lines[i].src.audioKey);
+            if (lines[i].src.type === 'sfx' && (loopSfx || getSettings().sfxOverlay)) {
                 await waitWhilePaused(mySession, generationAtStart);
                 if (mySession !== session || generationAtStart !== generationEpoch) return;
-                if (getSettings().sfxBed) playBed(url, lines[i].src);
+                if (loopSfx) playBed(url, lines[i].src); // 🔁 sounds: loop under the voices till the message ends
                 else playOverlay(url, lines[i].src);
                 continue;
             }
@@ -3943,6 +3940,7 @@ function renderCustomSfxList() {
                 <input class="text_pole vc_custom_sfx_name" type="text" placeholder="이름" />
                 <input class="text_pole vc_custom_sfx_words" type="text" placeholder="영어 단어 (쉼표로)" />
                 <div class="vc_icon_btn vc_custom_sfx_adult" title="🔞 성인 소리 (🔞 성인 효과음을 켰을 때만 나와요)" style="font-size:0.9em;opacity:${c.adult ? 1 : 0.3};filter:${c.adult ? 'none' : 'grayscale(1)'}">🔞</div>
+                <div class="vc_icon_btn vc_custom_sfx_loop" title="🔁 반복: 켜면 이 소리는 그 메시지 대사가 끝날 때까지 작게 반복돼요" style="font-size:0.9em;opacity:${c.loop ? 1 : 0.3};filter:${c.loop ? 'none' : 'grayscale(1)'}">🔁</div>
                 <div class="vc_icon_btn vc_custom_sfx_del fa-solid fa-trash-can" title="지우기"></div>
             </div>`);
         $row.find('.vc_custom_sfx_name').val(c.name ?? '');
@@ -4015,6 +4013,14 @@ function bindCustomSfxUI() {
             $(this).css({ opacity: c.adult ? 1 : 0.3, filter: c.adult ? 'none' : 'grayscale(1)' });
             setTimeout(updateInlinePrompt, 0);
         })
+        .on('click', '.vc_custom_sfx_loop', function () {
+            const id = $(this).closest('.vc_custom_sfx_row').data('id');
+            const c = s.customSfx.find(x => String(x.id) === String(id));
+            if (!c) return;
+            c.loop = !c.loop;
+            save();
+            $(this).css({ opacity: c.loop ? 1 : 0.3, filter: c.loop ? 'none' : 'grayscale(1)' });
+        })
         .on('click', '.vc_custom_sfx_play', async function () {
             const id = $(this).closest('.vc_custom_sfx_row').data('id');
             const url = await getCachedAudio(SFX_KEY_PREFIX + CUSTOM_SFX_PREFIX + id, { preview: true });
@@ -4076,7 +4082,7 @@ async function exportSfxPack() {
         try {
             const blob = await st.getItem(c.id);
             if (!blob) continue;
-            sounds.push({ name: c.name ?? '', words: c.words ?? '', adult: !!c.adult, data: await blobToDataUrl(blob) });
+            sounds.push({ name: c.name ?? '', words: c.words ?? '', adult: !!c.adult, loop: !!c.loop, data: await blobToDataUrl(blob) });
         } catch (e) {
             console.warn(LOG, 'pack export: skipped', c.name, e);
         }
@@ -4133,7 +4139,7 @@ async function importSfxPack(file) {
             skipped++;
             continue;
         }
-        s.customSfx.push({ id, name, words, ...(snd?.adult ? { adult: true } : {}) });
+        s.customSfx.push({ id, name, words, ...(snd?.adult ? { adult: true } : {}), ...(snd?.loop ? { loop: true } : {}) });
         added++;
     }
     save();
@@ -5021,8 +5027,6 @@ function settingsHtml() {
                 <div class="vc_hint vc_sub">지문의 문 쾅, 발소리 같은 소리를 대본에 따로 한 줄로 넣어요</div>
                 <label class="checkbox_label"><input id="voice_cast_sfx_overlay" type="checkbox" /><span>효과음을 대사랑 겹쳐서 재생</span></label>
                 <div class="vc_hint vc_sub">효과음이 따로 차례를 기다리지 않고 대사 밑에 깔려요</div>
-                <label class="checkbox_label"><input id="voice_cast_sfx_bed" type="checkbox" /><span>🔁 효과음을 배경에 계속 깔기</span></label>
-                <div class="vc_hint vc_sub">숨소리·빗소리처럼 긴 소리는 그 메시지가 끝날 때까지 작게(대사의 30%) 반복되다가 스르륵 꺼져요. 새 효과음이 나오면 그걸로 바뀌어요. 문 쾅 같은 짧은 소리는 한 번만 나요.</div>
                 <label class="checkbox_label"><input id="voice_cast_sfx_adult" type="checkbox" /><span>🔞 성인 장면 효과음도 넣기</span></label>
                 <div class="vc_hint vc_sub">키스·젖은 소리·살 부딪히는 소리 같은 것도 효과음 줄로 넣어요. 소리 파일은 아래 '내 효과음'에 직접 넣고 영어 단어(kiss, wet, slap, slurp …)를 붙인 뒤 🔞 버튼을 켜주세요. 🔞 켠 소리는 이 옵션이 켜져 있을 때만 나와요. 한 메시지에 최대 8개까지 넣어요. 분류 AI나 ElevenLabs가 거절하면 안 나올 수 있어요.</div>
                 <label class="checkbox_label"><input id="voice_cast_sfx_local" type="checkbox" /><span>내장 효과음 파일 먼저 쓰기</span></label>
@@ -5039,7 +5043,7 @@ function settingsHtml() {
                         <input id="voice_cast_custom_sfx_file" type="file" accept="audio/*" multiple hidden />
                         <input id="voice_cast_custom_sfx_pack" type="file" accept=".json,application/json" hidden />
                     </div>
-                    <div class="vc_hint">내장 소리보다 먼저 써요. 오른쪽 칸에 이 소리가 나올 <b>영어 단어</b>를 쉼표로 적어주세요 (예: phone ring, ringtone). 파일은 이 브라우저에만 저장돼요. 다른 기기(폰 등)로 옮길 땐 <b>팩 내보내기</b>로 파일 하나를 만들어서 거기서 <b>팩 불러오기</b> 하면 소리·단어·🔞 설정이 한 번에 들어가요.</div>
+                    <div class="vc_hint">내장 소리보다 먼저 써요. 오른쪽 칸에 이 소리가 나올 <b>영어 단어</b>를 쉼표로 적어주세요 (예: phone ring, ringtone). 🔞를 켜면 성인 효과음이 켜져 있을 때만 나오고, 🔁를 켜면 그 메시지 대사가 끝날 때까지 작게 반복돼요. 파일은 이 브라우저에만 저장돼요. 다른 기기(폰 등)로 옮길 땐 <b>팩 내보내기</b>로 파일 하나를 만들어서 거기서 <b>팩 불러오기</b> 하면 소리·단어·🔞 설정이 한 번에 들어가요.</div>
                     <div id="voice_cast_custom_sfx_list" class="vc_custom_sfx_list"></div>
                 </div>
                 <label for="voice_cast_sfx_voice">효과음에 쓸 목소리 (비우면 '성별 모름' 목소리)</label>
@@ -5324,7 +5328,6 @@ function bindSettingsUI() {
     bindCustomSfxUI();
     $('#voice_cast_sfx_local').prop('checked', s.sfxLocal !== false).on('change', function () { s.sfxLocal = !!this.checked; save(); });
     bindCheck('#voice_cast_sfx_overlay', 'sfxOverlay');
-    bindCheck('#voice_cast_sfx_bed', 'sfxBed');
     bindCheck('#voice_cast_sfx_adult', 'adultSfx');
     $('#voice_cast_sfx_adult').on('change', () => setTimeout(updateInlinePrompt, 0));
     $('#voice_cast_sfx').prop('checked', !!s.sfxEnabled).on('change', function () { setSfx($(this).prop('checked')); });
