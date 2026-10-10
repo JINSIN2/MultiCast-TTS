@@ -95,7 +95,7 @@ function getSettings() {
     if (!Array.isArray(s.cast)) s.cast = [];
     if (!s.castByBot || typeof s.castByBot !== 'object') s.castByBot = {};
     if (!s.castAutoSeen || typeof s.castAutoSeen !== 'object') s.castAutoSeen = {};
-    ensureCastIds(s);
+    if (ensureCastIds(s)) setTimeout(save, 0); // new ids are saved right away so they stay the same after a reload
     if (!s._migratedVoiceLang) {
         if (s.preferTranslation === false) s.voiceLang = 'original';
         s._migratedVoiceLang = true;
@@ -370,16 +370,18 @@ function newCastId() {
 }
 function ensureCastIds(s) {
     const seen = new Set();
+    let changed = false;
     const fix = (list) => {
         if (!Array.isArray(list)) return;
         for (const e of list) {
             if (!e || typeof e !== 'object') continue;
-            if (!e.id || seen.has(e.id)) e.id = newCastId(); // missing or copied → a fresh one
+            if (!e.id || seen.has(e.id)) { e.id = newCastId(); changed = true; } // missing or copied → a fresh one
             seen.add(e.id);
         }
     };
     fix(s.cast);
     for (const list of Object.values(s.castByBot ?? {})) fix(list);
+    return changed;
 }
 
 function allCastEntries() {
