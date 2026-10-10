@@ -317,10 +317,23 @@ function getStoredEntry(message) {
     return null;
 }
 
-function setStoredEntry(message, entry) {
+const SCRIPT_HISTORY_MAX = 3; // older scripts kept per message (and voice language)
+
+function setStoredEntry(message, entry, { keepOld = false } = {}) {
     setTimeout(markAllScriptButtons, 0); // 📜 brightens once a script exists
     message.extra = message.extra ?? {};
     const root = (message.extra[MODULE_NAME] ??= {});
+    // 📚 the script being replaced (message edited / re-classified) is kept as an older version — only if it had voices
+    const prev = getStoredEntry(message);
+    if (keepOld && Array.isArray(prev?.script) && prev.script.some(l => l?.audioKey)) {
+        root.history ??= {};
+        const list = (root.history[variantKey()] ??= []);
+        const sig = JSON.stringify(prev.script.map(l => [l?.text, l?.audioKey]));
+        if (!list.some(h => JSON.stringify((h.script ?? []).map(l => [l?.text, l?.audioKey])) === sig)) {
+            list.unshift({ at: Date.now(), textHash: prev.textHash ?? null, script: prev.script });
+            list.length = Math.min(list.length, SCRIPT_HISTORY_MAX);
+        }
+    }
     if (Array.isArray(root.script) && !root.variants) {
         // migrate pre-1.6 single script into the 'display' slot
         root.variants = { display: { hash: root.hash, textHash: root.textHash, script: root.script, edited: root.edited } };
@@ -328,6 +341,12 @@ function setStoredEntry(message, entry) {
     root.variants ??= {};
     delete root.script; delete root.hash; delete root.textHash; delete root.edited;
     root.variants[variantKey()] = entry;
+}
+
+/** Older scripts of this message (newest first) for the current voice language. */
+function getScriptHistory(message) {
+    const list = message?.extra?.[MODULE_NAME]?.history?.[variantKey()];
+    return Array.isArray(list) ? list.filter(h => Array.isArray(h?.script)) : [];
 }
 
 function normName(str) {
@@ -1184,6 +1203,32 @@ async function getScript(messageId, { force = false } = {}) {
     return p;
 }
 
+/**
+ * New script for an edited message: every line whose text (and speaker) is the same as before
+ * gets its old take back, so only the changed lines are made again (no credits for the rest).
+ */
+function carryOverTakes(oldScript, newScript) {
+    const flat = t => normForMatch(t).replace(/\s+/g, '');
+    const used = new Set();
+    let kept = 0;
+    for (const line of newScript) {
+        if (!line || line.audioKey) continue;
+        const text = flat(line.orig ?? line.text);
+        if (!text) continue;
+        const cands = oldScript.filter(o => o && o.audioKey && !used.has(o) && (o.type ?? 'speech') === (line.type ?? 'speech') && flat(o.orig ?? o.text) === text);
+        // same speaker first; a different speaker would be the wrong voice
+        const old = cands.find(o => normName(o.speaker) === normName(line.speaker)) ?? (line.type === 'sfx' ? cands[0] : null);
+        if (!old) continue;
+        used.add(old);
+        line.audioKey = old.audioKey;
+        line.tag = old.tag;
+        if (old.voiceId) line.voiceId = old.voiceId;
+        kept++;
+    }
+    if (kept) console.debug(LOG, `edited message: kept ${kept} voice take(s)`);
+    return kept;
+}
+
 async function getScriptInner(messageId, { force = false } = {}) {
     const ctx = SillyTavern.getContext();
     const message = ctx.chat[messageId];
@@ -1208,7 +1253,7 @@ async function getScriptInner(messageId, { force = false } = {}) {
     }
     if (solo) {
         const script = soloScript(message, messageId, text);
-        setStoredEntry(message, { hash: soloKey, textHash, script, edited: false });
+        setStoredEntry(message, { hash: soloKey, textHash, script, edited: false }, { keepOld: !!cached && (cached.textHash !== textHash || force) });
         await ctx.saveChat();
         return script;
     }
@@ -1250,7 +1295,9 @@ async function getScriptInner(messageId, { force = false } = {}) {
     }
     script ??= await runClassifier(text, prevText, userNameFor(messageId));
 
-    setStoredEntry(message, { hash: key, textHash, script, edited: false });
+    // the message was edited → lines that didn't change keep the voice already made for them
+    if (Array.isArray(cached?.script) && cached.script !== script && cached.textHash !== textHash) carryOverTakes(cached.script, script);
+    setStoredEntry(message, { hash: key, textHash, script, edited: false }, { keepOld: !!cached && (cached.textHash !== textHash || force) });
     // the tags did their job → take them out of the message so the chat file and every later prompt stay as light as before
     if (fromTags) stripVoiceTagsFromMessage(message);
     await ctx.saveChat();
@@ -1282,6 +1329,19 @@ function fixUserSpeaker(script, messageId) {
     for (const line of script) {
         if (normName(line?.speaker) === normName(selected)) line.speaker = real;
     }
+}
+
+/** Make an older script the current one again; the current one becomes an older version. */
+async function restoreScriptVersion(messageId, historyIndex, script) {
+    const ctx = SillyTavern.getContext();
+    const message = ctx.chat[messageId];
+    if (!message) return;
+    const root = message.extra?.[MODULE_NAME];
+    const list = root?.history?.[variantKey()];
+    if (Array.isArray(list)) list.splice(historyIndex, 1);
+    const text = getMessageText(message);
+    setStoredEntry(message, { hash: scriptKey(text), textHash: hashString(text), script, edited: true }, { keepOld: true });
+    await ctx.saveChat();
 }
 
 async function saveEditedScript(messageId, script) {
@@ -3478,7 +3538,7 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
         // 이어 듣기 (not in 한 줄씩 mode): go on line by line, across messages that have audio
         const s = getSettings();
         if (!singleOnly && s.continuePlay && !s.stepMode && generationAtStart === generationEpoch) {
-            const make = readMode() !== 'off' || s.continueMode === 'all';
+            const make = s.continueMode === 'all'; // '이미 만든 음성만' never makes new audio (also in read mode)
             const target = findStepTarget({ messageId, index }, 1, make);
             if (target) {
                 const nextLine = getStoredEntry(SillyTavern.getContext().chat[target.messageId])?.script?.[target.index];
@@ -4843,6 +4903,7 @@ function buildEditor(messageId, script) {
             <h3>📜 메시지 #${messageId} 대본</h3>
             <div class="vc_hint">
                 화자·성별·목소리·태그·대사를 고칠 수 있어요. 고친 줄만 새로 생성되고, 안 고친 줄은 저장된 음성을 다시 써요.
+                <br>📚 메시지를 고치거나 다시 분류하면 예전 대본이 ${SCRIPT_HISTORY_MAX}개까지 남아요. 채팅 파일에 같이 저장돼서 파일이 조금 커지고, 오래된 음성은 저장 공간 정리 때 지워질 수 있어요 (⭐ 즐겨찾기는 안 지워져요).
                 ${tagsOn ? '' : '<br>⚠️ 지금 모델/설정에서는 태그가 꺼져 있어서 태그 없이 읽어요.'}
             </div>
             <div class="vc_edit_lines"></div>
@@ -4963,7 +5024,35 @@ async function openScriptEditor(messageId) {
     // loop so "re-classify" can reopen the editor with fresh results
     // eslint-disable-next-line no-constant-condition
     while (true) {
+        const current = script;
+        const history = getScriptHistory(ctx.chat[messageId]);
+        let ver = 0; // 0 = current script, 1.. = older versions (newest first)
         const $editor = buildEditor(messageId, script);
+        if (history.length) {
+            const fmt = t => { try { return new Date(t).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
+            const $bar = $(`<div class="vc_row" style="align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap">
+                <div class="menu_button menu_button_icon vc_ver_prev" title="더 최근 대본"><i class="fa-solid fa-chevron-left"></i></div>
+                <b class="vc_ver_label"></b>
+                <div class="menu_button menu_button_icon vc_ver_next" title="이전 대본"><i class="fa-solid fa-chevron-right"></i></div>
+                <span class="vc_hint vc_ver_note"></span>
+            </div>`);
+            const show = () => {
+                const list = ver === 0 ? current : history[ver - 1].script;
+                script = list;
+                const $lines = $editor.find('.vc_edit_lines').empty();
+                for (const line of list) $lines.append(makeEditorRow(line));
+                $bar.find('.vc_ver_label').text(`📚 대본 ${ver + 1}/${history.length + 1}`);
+                $bar.find('.vc_ver_note').text(ver === 0
+                    ? '지금 대본이에요. ▶로 이전 대본(메시지 수정·다시 분류 전)을 볼 수 있어요.'
+                    : `이전 대본 · ${fmt(history[ver - 1].at)} · '저장하고 재생'이나 '저장만'을 누르면 이 대본으로 되돌려요.`);
+                $bar.find('.vc_ver_prev').css('opacity', ver === 0 ? 0.3 : '');
+                $bar.find('.vc_ver_next').css('opacity', ver === history.length ? 0.3 : '');
+            };
+            $bar.on('click', '.vc_ver_prev', () => { if (ver > 0) { ver--; show(); } });
+            $bar.on('click', '.vc_ver_next', () => { if (ver < history.length) { ver++; show(); } });
+            $editor.find('.vc_edit_lines').before($bar);
+            show();
+        }
         const popup = new ctx.Popup($editor, ctx.POPUP_TYPE.TEXT, '', {
             okButton: '저장하고 재생',
             cancelButton: '닫기',
@@ -4978,7 +5067,7 @@ async function openScriptEditor(messageId) {
                         const current = readEditor($editor);
                         const isChanged = JSON.stringify(current) !== JSON.stringify(script);
                         const kind = await chooseDownloadKind();
-                        if (kind) downloadMessageAudio(messageId, isChanged ? current : null, { kind });
+                        if (kind) downloadMessageAudio(messageId, (isChanged || ver > 0) ? current : null, { kind });
                     },
                 },
                 { text: '저장만', result: EDITOR_SAVE_ONLY, icon: 'fa-floppy-disk' },
@@ -4989,6 +5078,24 @@ async function openScriptEditor(messageId) {
         const result = await popup.show();
         const edited = readEditor($editor);
         const changed = JSON.stringify(edited) !== JSON.stringify(script);
+
+        // an older version was open
+        if (ver > 0 && result !== EDITOR_RECLASSIFY) {
+            if (result === ctx.POPUP_RESULT.AFFIRMATIVE || result === EDITOR_SAVE_ONLY) {
+                await restoreScriptVersion(messageId, ver - 1, edited);
+                redecorateMessage(messageId);
+                toastr.success('이전 대본으로 되돌렸어요.', 'MultiCast TTS', { timeOut: 1800 });
+                if (result === ctx.POPUP_RESULT.AFFIRMATIVE) playMessage(messageId, {});
+            } else if (changed) {
+                // only new takes heard on the old version → keep them with that version
+                const old = history[ver - 1].script;
+                if (old.length === edited.length) {
+                    edited.forEach((l, i) => { if (l.audioKey && old[i]) old[i].audioKey = l.audioKey; });
+                    await ctx.saveChat();
+                }
+            }
+            return;
+        }
 
         if (result === EDITOR_RECLASSIFY) {
             const wasEdited = getStoredEntry(ctx.chat[messageId])?.edited || changed;
