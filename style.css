@@ -238,6 +238,21 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
     display: none;
 }
 
+/* ---- 📜: hollow + faded when the message has no script yet ---- */
+#chat .mes .mes_button.vc_edit_btn.vc_no_script {
+    color: transparent !important;
+    -webkit-text-stroke: 1.3px var(--SmartThemeBodyColor, #888);
+    opacity: 0.55 !important;
+}
+
+#chat .mes .mes_button.vc_edit_btn.vc_no_script:hover {
+    opacity: 0.9 !important;
+}
+
+#chat .mes .mes_button.vc_edit_btn.vc_has_script {
+    opacity: 1 !important;
+}
+
 /* ---- ▶ next to each line ---- */
 .vc_line_play {
     display: inline-block;

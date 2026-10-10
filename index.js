@@ -3391,7 +3391,9 @@ function markScriptButton(messageId) {
     const message = SillyTavern.getContext().chat?.[messageId];
     const has = !!message && !message.is_system && hasScriptFor(message);
     for (const b of btns) {
-        b.style.opacity = has ? '1' : '0.3';
+        b.style.opacity = '';
+        b.classList.toggle('vc_has_script', has);
+        b.classList.toggle('vc_no_script', !has); // hollow + faded (CSS, survives themes that force button opacity)
         b.title = has ? 'MultiCast TTS 대본 편집 (대본 있음)' : 'MultiCast TTS 대본 편집 (아직 대본 없음 — 열면 분류해요)';
     }
 }
