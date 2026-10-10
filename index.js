@@ -4923,11 +4923,12 @@ function buildEditor(messageId, script) {
     const $editor = $(`
         <div class="vc_editor">
             <h3>📜 메시지 #${messageId} 대본</h3>
-            <div class="vc_hint">
-                화자·성별·목소리·태그·대사를 고칠 수 있어요. 고친 줄만 새로 생성되고, 안 고친 줄은 저장된 음성을 다시 써요.
+            <details class="vc_hint vc_editor_help">
+                <summary>고친 줄만 새로 만들고, 안 고친 줄은 저장된 음성을 다시 써요. ⓘ</summary>
+                화자·성별·목소리·태그·대사를 고칠 수 있어요.
                 <br>📚 메시지를 고치거나 다시 분류하면 예전 대본이 ${SCRIPT_HISTORY_MAX}개까지 남아요. 다른 음성 언어로 만든 대본도 ◀ ▶로 넘겨서 듣거나 받을 수 있어요. 채팅 파일에 같이 저장돼서 파일이 조금 커지고, 오래된 음성은 저장 공간 정리 때 지워질 수 있어요 (⭐ 즐겨찾기는 안 지워져요).
-                ${tagsOn ? '' : '<br>⚠️ 지금 모델/설정에서는 태그가 꺼져 있어서 태그 없이 읽어요.'}
-            </div>
+            </details>
+            ${tagsOn ? '' : '<div class="vc_hint">⚠️ 지금 모델/설정에서는 태그가 꺼져 있어서 태그 없이 읽어요.</div>'}
             <div class="vc_edit_lines"></div>
             <div class="menu_button menu_button_icon vc_add_line"><i class="fa-solid fa-plus"></i><span>줄 추가</span></div>
         </div>`);
@@ -5070,11 +5071,13 @@ async function openScriptEditor(messageId) {
         };
         if (pages.length > 1) {
             const fmt = t => { try { return new Date(t).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
-            const $bar = $(`<div class="vc_row" style="align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap">
-                <div class="menu_button menu_button_icon vc_ver_prev" title="더 최근 대본"><i class="fa-solid fa-chevron-left"></i></div>
-                <b class="vc_ver_label"></b>
-                <div class="menu_button menu_button_icon vc_ver_next" title="이전 대본"><i class="fa-solid fa-chevron-right"></i></div>
-                <span class="vc_hint vc_ver_note"></span>
+            const $bar = $(`<div class="vc_ver_bar">
+                <div class="vc_ver_nav">
+                    <div class="menu_button menu_button_icon vc_ver_prev" title="앞 대본"><i class="fa-solid fa-chevron-left"></i></div>
+                    <b class="vc_ver_label"></b>
+                    <div class="menu_button menu_button_icon vc_ver_next" title="다음 대본"><i class="fa-solid fa-chevron-right"></i></div>
+                </div>
+                <div class="vc_hint vc_ver_note"></div>
             </div>`);
             const show = () => {
                 const p = page();
@@ -5082,14 +5085,14 @@ async function openScriptEditor(messageId) {
                 script = list;
                 const $lines = $editor.find('.vc_edit_lines').empty();
                 for (const line of list) $lines.append(makeEditorRow(line));
-                $bar.find('.vc_ver_label').text(`📚 대본 ${ver + 1}/${pages.length}${p.kind === 'lang' ? ` · 🌐 ${p.label}` : ''}`);
+                $bar.find('.vc_ver_label').text(`📚 ${ver + 1}/${pages.length} · ${p.kind === 'current' ? '지금 대본' : p.kind === 'old' ? '이전 대본' : `🌐 ${p.label}`}`).attr('title', $bar.find('.vc_ver_label').text());
                 let note;
                 if (p.kind === 'current') {
-                    note = `지금 대본이에요 (${voiceLangLabel()}). ▶로 ${[history.length ? '이전 대본' : '', otherLangs.length ? '다른 음성 언어 대본' : ''].filter(Boolean).join('이나 ')}을 볼 수 있어요.`;
+                    note = `${voiceLangLabel()} · ▶로 ${[history.length ? '이전 대본' : '', otherLangs.length ? '다른 음성 언어 대본' : ''].filter(Boolean).join('이나 ')}을 볼 수 있어요.`;
                 } else if (p.kind === 'old') {
-                    note = `이전 대본 · ${fmt(p.h.at)} · '저장하고 재생'이나 '저장만'을 누르면 이 대본으로 되돌려요.`;
+                    note = `${fmt(p.h.at)} · '저장하고 재생'이나 '저장만'을 누르면 이 대본으로 되돌려요.`;
                 } else {
-                    note = `${p.label} 대본이에요${p.stale ? ' (메시지를 고치기 전 대본)' : ''}. 여기서는 그대로 재생하거나 파일로 받기만 돼요. 고치거나 되돌리려면 음성 언어를 바꿔서 열어주세요.`;
+                    note = `${p.stale ? '메시지를 고치기 전 대본이에요. ' : ''}재생 · 파일로 받기만 돼요. 고치려면 음성 언어를 바꿔서 열어주세요.`;
                 }
                 $bar.find('.vc_ver_note').text(note);
                 $bar.find('.vc_ver_prev').css('opacity', ver === 0 ? 0.3 : '');
