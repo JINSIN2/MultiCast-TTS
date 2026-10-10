@@ -4601,6 +4601,7 @@ function editorRowHtml() {
                 <div class="vc_icon_btn vc_e_play fa-solid fa-play" title="이 줄만 듣기 (저장된 음성이 있으면 그걸 재생)"></div>
                 <div class="vc_icon_btn vc_e_regen fa-solid fa-dice" title="이 줄 음성 새로 뽑기 (크레딧 사용)"></div>
                 <div class="vc_icon_btn vc_e_fav fa-regular fa-star" title="즐겨찾기 (시간이 지나도 안 지워져요)"></div>
+                <div class="vc_icon_btn vc_e_dl fa-solid fa-download" title="이 줄 음성만 mp3로 받기 (▶로 먼저 들어서 만든 뒤)"></div>
                 <div class="vc_icon_btn vc_e_up fa-solid fa-arrow-up" title="위로"></div>
                 <div class="vc_icon_btn vc_e_down fa-solid fa-arrow-down" title="아래로"></div>
                 <div class="vc_icon_btn vc_e_del fa-solid fa-trash-can" title="삭제"></div>
@@ -4639,6 +4640,7 @@ function updateRowBadge($row) {
     if (el) el.hidden = !has;
     const fav = has && isFav(key);
     $row.find('.vc_e_fav').toggleClass('vc_on fa-solid', fav).toggleClass('fa-regular', !fav).toggleClass('vc_disabled', !has);
+    $row.find('.vc_e_dl').toggleClass('vc_disabled', !has).css('opacity', has ? '' : 0.25);
 }
 
 function lineSignature(line) {
@@ -4741,6 +4743,33 @@ function buildEditor(messageId, script) {
         noteClipInfo(line.audioKey, line);
         updateRowBadge($row);
         toastr.info(on ? '⭐ 즐겨찾기했어요. 시간이 지나도 안 지워져요.' : '즐겨찾기를 해제했어요.', 'MultiCast TTS', { timeOut: 1500 });
+    });
+    // ⬇ save just this line's take (the one heard last) as its own file
+    $editor.on('click', '.vc_e_dl', async function () {
+        const line = readEditorRow($(this).closest('.vc_edit_row'));
+        if (!line.audioKey) {
+            toastr.info('먼저 ▶로 들어서 음성을 만들어 주세요.', 'MultiCast TTS', { timeOut: 2000 });
+            return;
+        }
+        const url = await getCachedAudio(line.audioKey, { preview: true });
+        if (!url) {
+            toastr.info('이 기기에는 저장된 음성이 없어요. ▶로 다시 들어주세요.', 'MultiCast TTS');
+            return;
+        }
+        try {
+            const blob = await (await fetch(url)).blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            const who = line.type === 'sfx' ? 'SFX' : line.speaker;
+            a.download = `${safeFileName(who)}_${messageId ?? 'line'}_${safeFileName(line.text).slice(0, 20)}.mp3`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        } catch (e) {
+            console.warn(LOG, e);
+            toastr.error('파일을 만들지 못했어요.', 'MultiCast TTS');
+        }
     });
     // editing a line means its old take no longer matches → hide the ✓
     $editor.on('input change', '.vc_edit_row input, .vc_edit_row select, .vc_edit_row textarea', function () {
