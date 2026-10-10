@@ -253,6 +253,19 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
     opacity: 1 !important;
 }
 
+/* ---- 📚 another voice language's script: play / download only ---- */
+.vc_ver_readonly .vc_e_up,
+.vc_ver_readonly .vc_e_down,
+.vc_ver_readonly .vc_e_del,
+.vc_ver_readonly .vc_add_line {
+    display: none !important;
+}
+
+.vc_ver_readonly .vc_edit_lines :disabled {
+    opacity: 0.75;
+    cursor: default;
+}
+
 /* ---- ▶ next to each line ---- */
 .vc_line_play {
     display: inline-block;

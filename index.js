@@ -343,6 +343,26 @@ function setStoredEntry(message, entry, { keepOld = false } = {}) {
     root.variants[variantKey()] = entry;
 }
 
+/** 📚 The current scripts this message has in the other voice languages (read-only in the editor). */
+function getOtherLangScripts(message) {
+    const variants = message?.extra?.[MODULE_NAME]?.variants;
+    if (!variants || typeof variants !== 'object') return [];
+    const order = ['display', 'original'];
+    const keys = Object.keys(variants)
+        .filter(k => k !== variantKey() && Array.isArray(variants[k]?.script) && variants[k].script.length)
+        .sort((a, b) => (order.includes(a) ? order.indexOf(a) : 9) - (order.includes(b) ? order.indexOf(b) : 9) || a.localeCompare(b));
+    const text = getMessageText(message);
+    return keys.map((key) => {
+        const entry = variants[key];
+        let label = VOICE_LANG_LABELS[key] ?? key;
+        if (key.startsWith('tr:')) {
+            const lang = key.slice(3);
+            label = `AI 번역 → ${lang.charAt(0).toUpperCase()}${lang.slice(1)}`;
+        }
+        return { key, label, entry, stale: !!(entry.textHash && text && entry.textHash !== hashString(text)) };
+    });
+}
+
 /** Older scripts of this message (newest first) for the current voice language. */
 function getScriptHistory(message) {
     const list = message?.extra?.[MODULE_NAME]?.history?.[variantKey()];
@@ -4905,7 +4925,7 @@ function buildEditor(messageId, script) {
             <h3>📜 메시지 #${messageId} 대본</h3>
             <div class="vc_hint">
                 화자·성별·목소리·태그·대사를 고칠 수 있어요. 고친 줄만 새로 생성되고, 안 고친 줄은 저장된 음성을 다시 써요.
-                <br>📚 메시지를 고치거나 다시 분류하면 예전 대본이 ${SCRIPT_HISTORY_MAX}개까지 남아요. 채팅 파일에 같이 저장돼서 파일이 조금 커지고, 오래된 음성은 저장 공간 정리 때 지워질 수 있어요 (⭐ 즐겨찾기는 안 지워져요).
+                <br>📚 메시지를 고치거나 다시 분류하면 예전 대본이 ${SCRIPT_HISTORY_MAX}개까지 남아요. 다른 음성 언어로 만든 대본도 ◀ ▶로 넘겨서 듣거나 받을 수 있어요. 채팅 파일에 같이 저장돼서 파일이 조금 커지고, 오래된 음성은 저장 공간 정리 때 지워질 수 있어요 (⭐ 즐겨찾기는 안 지워져요).
                 ${tagsOn ? '' : '<br>⚠️ 지금 모델/설정에서는 태그가 꺼져 있어서 태그 없이 읽어요.'}
             </div>
             <div class="vc_edit_lines"></div>
@@ -5028,9 +5048,27 @@ async function openScriptEditor(messageId) {
     while (true) {
         const current = script;
         const history = getScriptHistory(ctx.chat[messageId]);
-        let ver = 0; // 0 = current script, 1.. = older versions (newest first)
+        const otherLangs = getOtherLangScripts(ctx.chat[messageId]);
+        // pages: 0 = current script, then older versions (newest first), then other voice languages
+        const pages = [{ kind: 'current' }, ...history.map((h, i) => ({ kind: 'old', h, i })), ...otherLangs.map(o => ({ kind: 'lang', ...o }))];
+        let ver = 0;
+        const page = () => pages[ver];
+        let popupDlg = null;
         const $editor = buildEditor(messageId, script);
-        if (history.length) {
+        // another language's script can only be played / downloaded here — not edited, saved or re-classified
+        const syncButtons = () => {
+            const isLang = page().kind === 'lang';
+            $editor.toggleClass('vc_ver_readonly', isLang);
+            $editor.find('.vc_e_speaker, .vc_e_gender, .vc_e_type, .vc_e_tag, .vc_e_text, .vc_e_voice').prop('disabled', isLang);
+            if (!popupDlg) return;
+            const ok = popupDlg.querySelector('.popup-button-ok');
+            if (ok) ok.textContent = isLang ? '이 대본 재생' : '저장하고 재생';
+            popupDlg.querySelectorAll('.popup-controls .menu_button, .popup-controls .popup-button-custom').forEach((b) => {
+                const t = b.textContent || '';
+                if (t.includes('저장만') || t.includes('AI로 다시 분류')) b.style.display = isLang ? 'none' : '';
+            });
+        };
+        if (pages.length > 1) {
             const fmt = t => { try { return new Date(t).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
             const $bar = $(`<div class="vc_row" style="align-items:center;gap:8px;margin:6px 0;flex-wrap:wrap">
                 <div class="menu_button menu_button_icon vc_ver_prev" title="더 최근 대본"><i class="fa-solid fa-chevron-left"></i></div>
@@ -5039,19 +5077,27 @@ async function openScriptEditor(messageId) {
                 <span class="vc_hint vc_ver_note"></span>
             </div>`);
             const show = () => {
-                const list = ver === 0 ? current : history[ver - 1].script;
+                const p = page();
+                const list = p.kind === 'current' ? current : p.kind === 'old' ? p.h.script : p.entry.script;
                 script = list;
                 const $lines = $editor.find('.vc_edit_lines').empty();
                 for (const line of list) $lines.append(makeEditorRow(line));
-                $bar.find('.vc_ver_label').text(`📚 대본 ${ver + 1}/${history.length + 1}`);
-                $bar.find('.vc_ver_note').text(ver === 0
-                    ? '지금 대본이에요. ▶로 이전 대본(메시지 수정·다시 분류 전)을 볼 수 있어요.'
-                    : `이전 대본 · ${fmt(history[ver - 1].at)} · '저장하고 재생'이나 '저장만'을 누르면 이 대본으로 되돌려요.`);
+                $bar.find('.vc_ver_label').text(`📚 대본 ${ver + 1}/${pages.length}${p.kind === 'lang' ? ` · 🌐 ${p.label}` : ''}`);
+                let note;
+                if (p.kind === 'current') {
+                    note = `지금 대본이에요 (${voiceLangLabel()}). ▶로 ${[history.length ? '이전 대본' : '', otherLangs.length ? '다른 음성 언어 대본' : ''].filter(Boolean).join('이나 ')}을 볼 수 있어요.`;
+                } else if (p.kind === 'old') {
+                    note = `이전 대본 · ${fmt(p.h.at)} · '저장하고 재생'이나 '저장만'을 누르면 이 대본으로 되돌려요.`;
+                } else {
+                    note = `${p.label} 대본이에요${p.stale ? ' (메시지를 고치기 전 대본)' : ''}. 여기서는 그대로 재생하거나 파일로 받기만 돼요. 고치거나 되돌리려면 음성 언어를 바꿔서 열어주세요.`;
+                }
+                $bar.find('.vc_ver_note').text(note);
                 $bar.find('.vc_ver_prev').css('opacity', ver === 0 ? 0.3 : '');
-                $bar.find('.vc_ver_next').css('opacity', ver === history.length ? 0.3 : '');
+                $bar.find('.vc_ver_next').css('opacity', ver === pages.length - 1 ? 0.3 : '');
+                syncButtons();
             };
             $bar.on('click', '.vc_ver_prev', () => { if (ver > 0) { ver--; show(); } });
-            $bar.on('click', '.vc_ver_next', () => { if (ver < history.length) { ver++; show(); } });
+            $bar.on('click', '.vc_ver_next', () => { if (ver < pages.length - 1) { ver++; show(); } });
             $editor.find('.vc_edit_lines').before($bar);
             show();
         }
@@ -5077,20 +5123,33 @@ async function openScriptEditor(messageId) {
             ],
         });
         popup.dlg?.classList.add('vc_editor_popup');
+        popupDlg = popup.dlg ?? null;
+        syncButtons();
         const result = await popup.show();
         const edited = readEditor($editor);
         const changed = JSON.stringify(edited) !== JSON.stringify(script);
 
+        // another voice language's script was open → play it as it is (new takes stay with that language); never saved over this one
+        if (page().kind === 'lang') {
+            const stored = page().entry.script;
+            if (stored.length === edited.length && edited.some((l, i) => l.audioKey && l.audioKey !== stored[i]?.audioKey)) {
+                edited.forEach((l, i) => { if (l.audioKey && stored[i]) stored[i].audioKey = l.audioKey; });
+                await ctx.saveChat();
+            }
+            if (result === ctx.POPUP_RESULT.AFFIRMATIVE) playMessage(messageId, { script: stored });
+            return;
+        }
+
         // an older version was open
         if (ver > 0 && result !== EDITOR_RECLASSIFY) {
             if (result === ctx.POPUP_RESULT.AFFIRMATIVE || result === EDITOR_SAVE_ONLY) {
-                await restoreScriptVersion(messageId, ver - 1, edited);
+                await restoreScriptVersion(messageId, page().i, edited);
                 redecorateMessage(messageId);
                 toastr.success('이전 대본으로 되돌렸어요.', 'MultiCast TTS', { timeOut: 1800 });
                 if (result === ctx.POPUP_RESULT.AFFIRMATIVE) playMessage(messageId, {});
             } else if (changed) {
                 // only new takes heard on the old version → keep them with that version
-                const old = history[ver - 1].script;
+                const old = page().h.script;
                 if (old.length === edited.length) {
                     edited.forEach((l, i) => { if (l.audioKey && old[i]) old[i].audioKey = l.audioKey; });
                     await ctx.saveChat();
