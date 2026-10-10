@@ -95,6 +95,7 @@ function getSettings() {
     if (!Array.isArray(s.cast)) s.cast = [];
     if (!s.castByBot || typeof s.castByBot !== 'object') s.castByBot = {};
     if (!s.castAutoSeen || typeof s.castAutoSeen !== 'object') s.castAutoSeen = {};
+    ensureCastIds(s);
     if (!s._migratedVoiceLang) {
         if (s.preferTranslation === false) s.voiceLang = 'original';
         s._migratedVoiceLang = true;
@@ -363,6 +364,24 @@ function getBotCast(create = false) {
 }
 
 /** Bot cast first (more specific), then the shared cast. */
+/** Every cast row gets an id that never changes (renaming keeps it) — other extensions link to it. */
+function newCastId() {
+    return 'mc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function ensureCastIds(s) {
+    const seen = new Set();
+    const fix = (list) => {
+        if (!Array.isArray(list)) return;
+        for (const e of list) {
+            if (!e || typeof e !== 'object') continue;
+            if (!e.id || seen.has(e.id)) e.id = newCastId(); // missing or copied → a fresh one
+            seen.add(e.id);
+        }
+    };
+    fix(s.cast);
+    for (const list of Object.values(s.castByBot ?? {})) fix(list);
+}
+
 function allCastEntries() {
     return [...(getBotCast() ?? []), ...getSettings().cast];
 }
@@ -2706,6 +2725,7 @@ function stopAllBeds(ms = 0) {
 }
 
 function stopPlayback() {
+    const wasPlaying = apiActive;
     for (const a of overlayAudios) a.pause();
     overlayAudios.clear();
     stopAllBeds(300);
@@ -2724,6 +2744,7 @@ function stopPlayback() {
         setStatus(playingMessageId, null);
         playingMessageId = null;
     }
+    if (wasPlaying) apiSetIdle('stopped');
 }
 
 /** Per-character volume from the cast row (1 = 100%, up to 2 = 200%). */
@@ -2964,6 +2985,7 @@ function adjacentSavedMessage(messageId, dir) {
 
 /** Go on to another message after a short breath (cancelled if the user stopped/started something meanwhile). */
 function hopTo(target, opts) {
+    if (autoHolds.size) return; // 이어 듣기 waits while another extension holds auto play
     const sessAtEnd = session;
     const chatAtEnd = SillyTavern.getContext().chat;
     setTimeout(() => {
@@ -2986,6 +3008,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
     stopPlayback();
     const mySession = session;
     playingMessageId = messageId;
+    apiSetPlaying(messageId);
     if (messageId !== null) setButtonState(messageId, true);
     let failed = false;
     let crossDir = 0; // ⏭ on the last line → +1, ⏮ on the first line → -1
@@ -3129,6 +3152,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             currentAudio = null;
             paused = false;
             setNowPlaying(null);
+            apiSetIdleSoon(failed ? 'error' : 'done');
             if (!failed && !givenScript && messageId !== null && generationAtStart === generationEpoch) {
                 if (crossDir) {
                     // ⏮/⏭ past the edge: hop to the previous/next message that already has audio (no credits)
@@ -3464,6 +3488,7 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
         return;
     }
     setLinePlaying({ messageId, index });
+    apiSetPlaying(messageId);
     setNowPlaying({ messageId, line, index: null, total: null });
     const hlRoot = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
     const script = getStoredEntry(ctx.chat[messageId])?.script ?? [];
@@ -3475,9 +3500,10 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
         currentAudio = null;
         paused = false;
         setNowPlaying(null);
+        apiSetIdleSoon('done');
         // 이어 듣기 (not in 한 줄씩 mode): go on line by line, across messages that have audio
         const s = getSettings();
-        if (!singleOnly && s.continuePlay && !s.stepMode && generationAtStart === generationEpoch) {
+        if (!singleOnly && s.continuePlay && !s.stepMode && !autoHolds.size && generationAtStart === generationEpoch) {
             const make = readMode() !== 'off' || s.continueMode === 'all';
             const target = findStepTarget({ messageId, index }, 1, make);
             if (target) {
@@ -4164,8 +4190,8 @@ async function onCharacterMessageRendered(messageId, type) {
     // the chat might have changed while waiting
     if (SillyTavern.getContext().chat[messageId] !== message || token !== generationEpoch || generationPaused) return;
     if (readMode() !== 'off') prepareMessage(messageId);
-    else if (s.autoPlay) playMessage(messageId);
-    else preloadMessage(messageId);
+    else if (s.autoPlay && !autoHolds.size) playMessage(messageId);
+    else preloadMessage(messageId); // auto play on hold (another extension asked, e.g. during a call) → just get it ready
 }
 
 /** Classify + generate a message's audio in the background without playing it. */
@@ -5170,6 +5196,11 @@ async function openQuickMenu() {
         { id: 'sfx', icon: 'fa-bell', label: () => `효과음: ${getSettings().sfxEnabled ? '켜짐' : '꺼짐'}`, hint: '', run: () => setSfx(!getSettings().sfxEnabled) },
         { id: 'saved', icon: 'fa-list', label: () => '이 채팅 대사 음성', hint: '', run: () => { popup?.completeCancelled?.(); setTimeout(openSavedList, 50); } },
         { id: 'all', icon: 'fa-folder-open', label: () => '모든 봇 대사 음성 · ⭐ 즐겨찾기', hint: '봇·캐릭터별로 골라 보기', run: () => { popup?.completeCancelled?.(); setTimeout(() => openAllVoices(), 50); } },
+        // buttons other extensions added (e.g. 📱 폰 열기) — they close this menu and run their own action
+        ...[...quickActions.values()].map(a => ({
+            id: `ext_${a.id}`, icon: a.icon, label: () => a.label, hint: a.hint,
+            run: () => { popup?.completeCancelled?.(); setTimeout(() => { try { a.run(); } catch (e) { console.warn(LOG, 'quick action failed', a.id, e); } }, 50); },
+        })),
     ];
     const render = () => {
         $box.empty();
@@ -6008,6 +6039,114 @@ function registerCommands() {
 // Init
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Public API for other extensions: window.MultiCastTTS (apiVersion 1)
+// Keep its shape stable — other extensions depend on it. Add things; don't rename or remove.
+// ---------------------------------------------------------------------------
+
+const API_VERSION = 1;
+const apiListeners = new Map(); // type -> Set(fn)
+const autoHolds = new Set();    // reasons another extension holds auto play (e.g. 'call')
+const quickActions = new Map(); // id -> { id, icon, label, hint, run }
+let apiActive = false;
+let apiMessageId = null;
+let apiIdleTimer = null;
+
+function emitApi(type, detail) {
+    try { document.dispatchEvent(new CustomEvent(`multicast:${type}`, { detail })); } catch { /* ignore */ }
+    for (const fn of apiListeners.get(type) ?? []) {
+        try { fn(detail); } catch (e) { console.warn(LOG, `listener for ${type} failed`, e); }
+    }
+}
+
+function apiSetPlaying(messageId) {
+    clearTimeout(apiIdleTimer);
+    apiMessageId = messageId ?? null;
+    if (apiActive) return;
+    apiActive = true;
+    emitApi('playstart', { messageId: apiMessageId });
+}
+
+function apiSetIdle(reason) {
+    clearTimeout(apiIdleTimer);
+    if (!apiActive) return;
+    apiActive = false;
+    const messageId = apiMessageId;
+    apiMessageId = null;
+    emitApi('playend', { messageId, reason });
+}
+
+/** A short grace so going on to the next message (이어 듣기) doesn't flicker end → start. */
+function apiSetIdleSoon(reason) {
+    clearTimeout(apiIdleTimer);
+    apiIdleTimer = setTimeout(() => {
+        if (playingMessageId === null && !(currentAudio && !currentAudio.paused)) apiSetIdle(reason);
+    }, 1200);
+}
+
+function apiCastEntry(e, scope, botKey) {
+    const names = String(e.names ?? '').split(',').map(n => n.trim()).filter(Boolean)
+        .map(n => (n.toLowerCase() === '{{user}}' ? (SillyTavern.getContext().name1 || n) : n));
+    return {
+        id: e.id,
+        name: names[0] ?? '',
+        aliases: names.slice(1),
+        gender: e.gender === 'm' || e.gender === 'f' ? e.gender : 'u',
+        voiceId: e.voiceId || '',
+        voiceName: e.voiceId ? voiceName(e.voiceId) : '',
+        alwaysTags: String(e.alwaysTags ?? '').split(',').map(t => t.trim().replace(/^\[|\]$/g, '')).filter(Boolean),
+        actingNote: String(e.actingNote ?? ''),
+        isUser: !!e.autoUser || names.some(n => n === SillyTavern.getContext().name1),
+        scope,
+        botKey: botKey ?? null,
+    };
+}
+
+window.MultiCastTTS = Object.freeze({
+    apiVersion: API_VERSION,
+    /** true while MultiCast is playing (a message, a single line, or between lines of the same message). */
+    isPlaying: () => apiActive,
+    /** message id being played, or null */
+    playingMessageId: () => apiMessageId,
+    /** Stop whatever MultiCast is playing. */
+    stop: () => stopPlayback(),
+    /** Hold auto play / 이어 듣기 until released (e.g. during a call). Reasons stack; nothing already playing is stopped. */
+    holdAutoPlay: (reason = 'external') => { autoHolds.add(String(reason)); },
+    releaseAutoPlay: (reason = 'external') => { autoHolds.delete(String(reason)); },
+    isAutoPlayHeld: () => autoHolds.size > 0,
+    /**
+     * Cast rows with stable ids. scope: 'current' (this bot + shared, default) or 'all' (every bot + shared).
+     * Returns plain copies — changing them changes nothing in MultiCast.
+     */
+    getCast: ({ scope = 'current' } = {}) => {
+        const s = getSettings();
+        const out = [];
+        if (scope === 'all') {
+            for (const [key, list] of Object.entries(s.castByBot ?? {})) for (const e of list ?? []) out.push(apiCastEntry(e, 'bot', key));
+        } else {
+            const bot = currentBot();
+            for (const e of getBotCast() ?? []) out.push(apiCastEntry(e, 'bot', bot?.key));
+        }
+        for (const e of s.cast ?? []) out.push(apiCastEntry(e, 'global', null));
+        return out.filter(e => e.id && e.name);
+    },
+    /** Listen: 'playstart' { messageId } · 'playend' { messageId, reason: 'done' | 'stopped' | 'error' }. Also fired on document as 'multicast:<type>'. */
+    on: (type, fn) => {
+        if (typeof fn !== 'function') return;
+        if (!apiListeners.has(type)) apiListeners.set(type, new Set());
+        apiListeners.get(type).add(fn);
+    },
+    off: (type, fn) => { apiListeners.get(type)?.delete(fn); },
+    /** Add a row to MultiCast's 요술봉 quick menu, e.g. { id: 'phone', icon: 'fa-mobile-screen', label: '📱 폰 열기', run() {} }. Same id replaces. */
+    addQuickAction: (action) => {
+        if (!action || !action.id || typeof action.run !== 'function') return false;
+        const icon = /^fa-[a-z0-9-]+$/.test(String(action.icon ?? '')) ? action.icon : 'fa-puzzle-piece';
+        quickActions.set(String(action.id), { id: String(action.id), icon, label: String(action.label ?? action.id), hint: String(action.hint ?? ''), run: action.run });
+        return true;
+    },
+    removeQuickAction: (id) => quickActions.delete(String(id)),
+});
+
 jQuery(async () => {
     const { eventSource, event_types } = SillyTavern.getContext();
     getSettings();
@@ -6075,4 +6214,6 @@ jQuery(async () => {
     }
 
     console.log(LOG, 'loaded');
+    // other extensions loaded earlier can wait for this (window.MultiCastTTS is already there)
+    emitApi('ready', { apiVersion: API_VERSION });
 });
