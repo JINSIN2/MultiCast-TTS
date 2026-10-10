@@ -1227,17 +1227,39 @@ async function getScript(messageId, { force = false } = {}) {
  * New script for an edited message: every line whose text (and speaker) is the same as before
  * gets its old take back, so only the changed lines are made again (no credits for the rest).
  */
+/** Scripts this message already has voices for (this voice language): current one, older 📚 versions, other swipes. */
+function takeSources(message) {
+    const key = variantKey();
+    const out = [];
+    const addRoot = (root) => {
+        if (!root || typeof root !== 'object') return;
+        const cur = root.variants?.[key]?.script ?? (key === 'display' && !root.variants ? root.script : null);
+        if (Array.isArray(cur)) out.push(cur);
+        const hist = root.history?.[key];
+        if (Array.isArray(hist)) for (const h of hist) if (Array.isArray(h?.script)) out.push(h.script);
+    };
+    addRoot(message?.extra?.[MODULE_NAME]);
+    const swipes = Array.isArray(message?.swipe_info) ? message.swipe_info : [];
+    swipes.forEach((info, i) => { if (i !== message.swipe_id) addRoot(info?.extra?.[MODULE_NAME]); });
+    return out.filter(sc => sc.some(l => l?.audioKey));
+}
+
 function carryOverTakes(oldScript, newScript) {
     const flat = t => normForMatch(t).replace(/\s+/g, '');
     const used = new Set();
     let kept = 0;
+    // oldScript may also be a list of scripts (the previous one first, then older 📚 versions)
+    const pool = (Array.isArray(oldScript?.[0]) ? oldScript.flat() : oldScript).filter(o => o && typeof o === 'object');
     for (const line of newScript) {
         if (!line || line.audioKey) continue;
         const text = flat(line.orig ?? line.text);
         if (!text) continue;
-        const cands = oldScript.filter(o => o && o.audioKey && !used.has(o) && (o.type ?? 'speech') === (line.type ?? 'speech') && flat(o.orig ?? o.text) === text);
-        // same speaker first; a different speaker would be the wrong voice
-        const old = cands.find(o => normName(o.speaker) === normName(line.speaker)) ?? (line.type === 'sfx' ? cands[0] : null);
+        const cands = pool.filter(o => o.audioKey && !used.has(o) && (o.type ?? 'speech') === (line.type ?? 'speech') && flat(o.orig ?? o.text) === text);
+        // same speaker first; then a line that would be read by the same voice anyway (speaker just named differently)
+        const voice = pickVoice(line);
+        const old = cands.find(o => normName(o.speaker) === normName(line.speaker))
+            ?? (line.type === 'sfx' ? cands[0] : null)
+            ?? (voice ? cands.find(o => pickVoice(o) === voice) : null);
         if (!old) continue;
         used.add(old);
         line.audioKey = old.audioKey;
@@ -1273,6 +1295,10 @@ async function getScriptInner(messageId, { force = false } = {}) {
     }
     if (solo) {
         const script = soloScript(message, messageId, text);
+        if (!cached || cached.textHash !== textHash) {
+            const sources = takeSources(message);
+            if (sources.length) carryOverTakes(sources, script);
+        }
         setStoredEntry(message, { hash: soloKey, textHash, script, edited: false }, { keepOld: !!cached && (cached.textHash !== textHash || force) });
         await ctx.saveChat();
         return script;
@@ -1316,7 +1342,11 @@ async function getScriptInner(messageId, { force = false } = {}) {
     script ??= await runClassifier(text, prevText, userNameFor(messageId));
 
     // the message was edited → lines that didn't change keep the voice already made for them
-    if (Array.isArray(cached?.script) && cached.script !== script && cached.textHash !== textHash) carryOverTakes(cached.script, script);
+    // (also from older 📚 versions and the other swipes of this message, so swiping back and forth costs nothing)
+    if (!cached || (Array.isArray(cached.script) && cached.script !== script && cached.textHash !== textHash)) {
+        const sources = takeSources(message).filter(src => src !== script);
+        if (sources.length) carryOverTakes(sources, script);
+    }
     setStoredEntry(message, { hash: key, textHash, script, edited: false }, { keepOld: !!cached && (cached.textHash !== textHash || force) });
     // the tags did their job → take them out of the message so the chat file and every later prompt stay as light as before
     if (fromTags) stripVoiceTagsFromMessage(message);
@@ -5054,6 +5084,8 @@ async function openScriptEditor(messageId) {
         const pages = [{ kind: 'current' }, ...history.map((h, i) => ({ kind: 'old', h, i })), ...otherLangs.map(o => ({ kind: 'lang', ...o }))];
         let ver = 0;
         const page = () => pages[ver];
+        const pageScript = p => (p.kind === 'current' ? current : p.kind === 'old' ? p.h.script : p.entry.script);
+        const snaps = {}; // page index → rows as they were when flipped away
         let popupDlg = null;
         const $editor = buildEditor(messageId, script);
         // another language's script can only be played / downloaded here — not edited, saved or re-classified
@@ -5081,8 +5113,9 @@ async function openScriptEditor(messageId) {
             </div>`);
             const show = () => {
                 const p = page();
-                const list = p.kind === 'current' ? current : p.kind === 'old' ? p.h.script : p.entry.script;
-                script = list;
+                script = pageScript(p);
+                // flipping back shows the page as it was left (new takes heard there keep their ✓)
+                const list = snaps[ver] ?? script;
                 const $lines = $editor.find('.vc_edit_lines').empty();
                 for (const line of list) $lines.append(makeEditorRow(line));
                 $bar.find('.vc_ver_label').text(`📚 ${ver + 1}/${pages.length} · ${p.kind === 'current' ? '지금 대본' : p.kind === 'old' ? '이전 대본' : `🌐 ${p.label}`}`).attr('title', $bar.find('.vc_ver_label').text());
@@ -5099,8 +5132,8 @@ async function openScriptEditor(messageId) {
                 $bar.find('.vc_ver_next').css('opacity', ver === pages.length - 1 ? 0.3 : '');
                 syncButtons();
             };
-            $bar.on('click', '.vc_ver_prev', () => { if (ver > 0) { ver--; show(); } });
-            $bar.on('click', '.vc_ver_next', () => { if (ver < pages.length - 1) { ver++; show(); } });
+            $bar.on('click', '.vc_ver_prev', () => { if (ver > 0) { snaps[ver] = readEditor($editor); ver--; show(); } });
+            $bar.on('click', '.vc_ver_next', () => { if (ver < pages.length - 1) { snaps[ver] = readEditor($editor); ver++; show(); } });
             $editor.find('.vc_edit_lines').before($bar);
             show();
         }
@@ -5131,6 +5164,25 @@ async function openScriptEditor(messageId) {
         const result = await popup.show();
         const edited = readEditor($editor);
         const changed = JSON.stringify(edited) !== JSON.stringify(script);
+
+        // takes made on pages that were flipped away from → keep them with that page's script (same line only)
+        let keptElsewhere = false;
+        for (const [idx, snap] of Object.entries(snaps)) {
+            if (Number(idx) === ver || !pages[idx]) continue;
+            const orig = pageScript(pages[idx]);
+            if (!Array.isArray(orig) || orig.length !== snap.length) continue;
+            snap.forEach((l, i) => {
+                const o = orig[i];
+                if (l.audioKey && o && o.audioKey !== l.audioKey && lineSignature(l) === lineSignature(o)) {
+                    o.audioKey = l.audioKey;
+                    keptElsewhere = true;
+                }
+            });
+        }
+        if (keptElsewhere) {
+            await ctx.saveChat();
+            redecorateMessage(messageId);
+        }
 
         // another voice language's script was open → play it as it is (new takes stay with that language); never saved over this one
         if (page().kind === 'lang') {
