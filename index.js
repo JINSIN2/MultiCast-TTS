@@ -71,6 +71,10 @@ const defaultSettings = Object.freeze({
     sfxLocal: true,
     adultSfx: false,         // 🔞 also tag intimate sounds in adult scenes (kissing, wet sounds, skin slapping …)
     sfxOverlay: false,       // play sound effects under the voices instead of as their own turn
+    phoneFilter: false,      // 📞 SceneVoice calls borrow MultiCast's phone-line filter (window.MultiCastTTS.phoneAudio)
+    phoneKind: 'mobile',     // mobile | landline | speaker
+    phoneMuffle: 50,         // 0~100: how narrow (muffled) the line sounds
+    phoneNoise: 0,           // 0~100: line hiss
     customSfx: [],           // [{ id, name, words }] — user's own sound files (audio kept in IndexedDB, not in settings)          // bundled CC0 sound files first (free, any model); ElevenLabs tag only when nothing fits
     cast: [],        // shared cast (applies to every bot)
     castByBot: {},   // { 'char:<avatar>' | 'group:<id>': [entries] }
@@ -5581,6 +5585,22 @@ function settingsHtml() {
                 <input id="voice_cast_volume" type="range" min="0" max="1" step="0.05" />
                 <label>재생 속도: <span id="voice_cast_rate_val"></span></label>
                 <input id="voice_cast_rate" type="range" min="0.7" max="1.5" step="0.05" />
+                <div class="vc_section_title">📞 씬보이스 통화 목소리</div>
+                <label class="checkbox_label"><input id="voice_cast_phone_on" type="checkbox" /><span>씬보이스 통화를 전화 목소리로</span></label>
+                <div class="vc_hint vc_sub">씬보이스 스마트폰 통화 음성에 전화기 필터를 씌워요. 크레딧 안 써요. 씬보이스가 이 기능을 지원하는 버전이어야 적용돼요.</div>
+                <div class="vc_row">
+                    <label for="voice_cast_phone_kind">종류</label>
+                    <select id="voice_cast_phone_kind" class="text_pole">
+                        <option value="mobile">📱 휴대폰</option>
+                        <option value="landline">☎️ 유선·옛날 전화</option>
+                        <option value="speaker">📢 스피커폰</option>
+                    </select>
+                </div>
+                <label>먹먹함: <span id="voice_cast_phone_muffle_val"></span></label>
+                <input id="voice_cast_phone_muffle" type="range" min="0" max="100" step="5" />
+                <label>지직 소리: <span id="voice_cast_phone_noise_val"></span></label>
+                <input id="voice_cast_phone_noise" type="range" min="0" max="100" step="5" />
+                <div id="voice_cast_phone_preview" class="menu_button menu_button_icon" title="이 채팅에서 가장 최근에 만든 대사 하나를 전화 목소리로 들어봐요 (크레딧 안 씀)"><i class="fa-solid fa-phone"></i><span>미리 듣기</span></div>
                 <div class="vc_row">
                     <label for="voice_cast_translation_wait">자동 재생 시 번역 기다리기 (초, 0=안 기다림)</label>
                     <input id="voice_cast_translation_wait" type="number" class="text_pole" min="0" max="60" step="1" style="width:70px" />
@@ -5843,6 +5863,11 @@ function bindSettingsUI() {
     bindRange('#voice_cast_volume', 'volume', pct);
     bindRange('#voice_cast_rate', 'rate', v => `${Number(v).toFixed(2).replace(/0$/, '')}배`);
     $('#voice_cast_rate').on('input', function () { if (currentAudio) currentAudio.playbackRate = Number($(this).val()) || 1; });
+    bindCheck('#voice_cast_phone_on', 'phoneFilter');
+    $('#voice_cast_phone_kind').val(PHONE_KINDS[s.phoneKind] ? s.phoneKind : 'mobile').on('change', function () { s.phoneKind = String($(this).val()); save(); });
+    bindRange('#voice_cast_phone_muffle', 'phoneMuffle', v => (Number(v) === 50 ? '기본' : Number(v) > 50 ? `더 먹먹하게 ${Number(v)}` : `더 또렷하게 ${Number(v)}`));
+    bindRange('#voice_cast_phone_noise', 'phoneNoise', v => (Number(v) ? `${Number(v)}` : '없음'));
+    $('#voice_cast_phone_preview').on('click', () => previewPhoneFilter());
     // remember which setting groups are open
     $('#voice_cast_settings .vc_group').each(function () {
         this.open = (s.openGroups ?? []).includes(this.dataset.group);
@@ -6266,6 +6291,144 @@ function registerCommands() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// 📞 Phone-line voice: a short clip rendered as if heard through a phone (no credits, offline render)
+// ---------------------------------------------------------------------------
+
+const PHONE_KINDS = {
+    mobile: { label: '📱 휴대폰', hp: 340, lp: 3200, peaks: [[1800, 4]], drive: 0, room: [] },
+    landline: { label: '☎️ 유선·옛날 전화', hp: 450, lp: 2700, peaks: [[1400, 6]], drive: 2.2, room: [] },
+    speaker: { label: '📢 스피커폰', hp: 290, lp: 4200, peaks: [[2500, 4], [600, 2]], drive: 0, room: [[0.023, 0.35], [0.041, 0.25], [0.067, 0.15]] },
+};
+
+function phoneFilterOn() {
+    const s = getSettings();
+    return !!(s.enabled && s.phoneFilter);
+}
+
+/** Blob | URL string | ArrayBuffer → Blob (wav) as heard through the phone, or null if it can't be done. */
+async function renderPhoneAudio(input) {
+    const OAC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
+    if (!OAC || !input) return null;
+    const s = getSettings();
+    const kind = PHONE_KINDS[s.phoneKind] ?? PHONE_KINDS.mobile;
+    let bytes;
+    if (input instanceof ArrayBuffer) bytes = input.slice(0);
+    else if (input instanceof Blob) bytes = await input.arrayBuffer();
+    else bytes = await (await fetch(String(input))).arrayBuffer();
+    const SR = 44100;
+    const decoded = await new OAC(1, SR, SR).decodeAudioData(bytes);
+    // mono source
+    const mono = new Float32Array(decoded.length);
+    for (let c = 0; c < decoded.numberOfChannels; c++) {
+        const ch = decoded.getChannelData(c);
+        for (let i = 0; i < ch.length; i++) mono[i] += ch[i] / decoded.numberOfChannels;
+    }
+    const tail = kind.room.length ? Math.ceil(0.15 * SR) : 0;
+    const ctx = new OAC(1, mono.length + tail, SR);
+    const srcBuf = ctx.createBuffer(1, mono.length, SR);
+    srcBuf.copyToChannel(mono, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = srcBuf;
+
+    // 먹먹함 50 = the preset as is; higher = narrower line
+    const f = 0.75 + 0.5 * (Math.min(100, Math.max(0, Number(s.phoneMuffle) || 0)) / 100);
+    const chain = [];
+    const biquad = (type, freq, gain = 0, q = Math.SQRT1_2) => {
+        const b = ctx.createBiquadFilter();
+        b.type = type; b.frequency.value = freq; b.Q.value = q; b.gain.value = gain;
+        chain.push(b);
+    };
+    biquad('highpass', kind.hp * f); biquad('highpass', kind.hp * f);
+    biquad('lowpass', kind.lp / f); biquad('lowpass', kind.lp / f);
+    for (const [freq, gain] of kind.peaks) biquad('peaking', freq, gain, 1);
+    if (kind.drive) {
+        const sh = ctx.createWaveShaper();
+        const curve = new Float32Array(1024);
+        for (let i = 0; i < curve.length; i++) { const x = (i / (curve.length - 1)) * 2 - 1; curve[i] = Math.tanh(x * kind.drive) / Math.tanh(kind.drive); }
+        sh.curve = curve;
+        chain.push(sh);
+    }
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -20; comp.ratio.value = 4; comp.attack.value = 0.005; comp.release.value = 0.08; comp.knee.value = 6;
+    let node = src;
+    for (const n of chain) { node.connect(n); node = n; }
+    node.connect(comp);
+    comp.connect(ctx.destination);
+    // small room for the speakerphone
+    for (const [delay, gain] of kind.room) {
+        const d = ctx.createDelay(1); d.delayTime.value = delay;
+        const g = ctx.createGain(); g.gain.value = gain;
+        comp.connect(d).connect(g).connect(ctx.destination);
+    }
+    // line hiss (band-limited pink noise)
+    const noiseAmt = 0.03 * (Math.min(100, Math.max(0, Number(s.phoneNoise) || 0)) / 100);
+    if (noiseAmt > 0) {
+        const nb = ctx.createBuffer(1, mono.length + tail, SR);
+        const d = nb.getChannelData(0);
+        let b0 = 0, b1 = 0, b2 = 0;
+        for (let i = 0; i < d.length; i++) {
+            const w = Math.random() * 2 - 1;
+            b0 = 0.99765 * b0 + w * 0.0990460; b1 = 0.96300 * b1 + w * 0.2965164; b2 = 0.57000 * b2 + w * 1.0526913;
+            d[i] = (b0 + b1 + b2 + w * 0.1848) * 0.2 * noiseAmt / 0.03 * 0.03;
+        }
+        const ns = ctx.createBufferSource(); ns.buffer = nb;
+        const nhp = ctx.createBiquadFilter(); nhp.type = 'highpass'; nhp.frequency.value = 600;
+        const nlp = ctx.createBiquadFilter(); nlp.type = 'lowpass'; nlp.frequency.value = 3000;
+        ns.connect(nhp).connect(nlp).connect(ctx.destination);
+        ns.start();
+    }
+    src.start();
+    const out = (await ctx.startRendering()).getChannelData(0);
+    // same loudness as the original voice (RMS), peaks kept under control
+    const rms = a => { let t = 0; for (let i = 0; i < a.length; i++) t += a[i] * a[i]; return Math.sqrt(t / Math.max(1, a.length)); };
+    const k = rms(out) > 0 ? rms(mono) / rms(out) : 1;
+    let peak = 0;
+    for (let i = 0; i < out.length; i++) { out[i] *= k; const a = Math.abs(out[i]); if (a > peak) peak = a; }
+    if (peak > 0.95) for (let i = 0; i < out.length; i++) out[i] *= 0.95 / peak;
+    return new Blob([encodeWavMono(out, SR)], { type: 'audio/wav' });
+}
+
+/** For other extensions: null when 📞 is off (play the original), else the phone-line version. */
+async function apiPhoneAudio(input, { force = false } = {}) {
+    if (!force && !phoneFilterOn()) return null;
+    try {
+        return await renderPhoneAudio(input);
+    } catch (e) {
+        console.warn(LOG, 'phone filter failed', e);
+        return null;
+    }
+}
+
+/** 🎧 미리 듣기: the newest saved voice line in this chat, through the phone filter. */
+let phonePreviewAudio = null;
+async function previewPhoneFilter() {
+    phonePreviewAudio?.pause();
+    const chat = SillyTavern.getContext().chat ?? [];
+    let key = null;
+    for (let m = chat.length - 1; m >= 0 && !key; m--) {
+        const script = getStoredEntry(chat[m])?.script ?? [];
+        for (let i = script.length - 1; i >= 0; i--) {
+            const k = script[i]?.audioKey;
+            if (k && script[i].type !== 'sfx' && !isLocalSfxKey(k) && keyHasAudio(k)) { key = k; break; }
+        }
+    }
+    if (!key) {
+        toastr.info('이 채팅에 만들어둔 대사 음성이 없어요. 대사를 하나 들어본 뒤 눌러주세요.', 'MultiCast TTS');
+        return;
+    }
+    const url = await getCachedAudio(key);
+    const blob = url ? await apiPhoneAudio(url, { force: true }) : null;
+    if (!blob) {
+        toastr.warning('미리 듣기를 만들지 못했어요.', 'MultiCast TTS');
+        return;
+    }
+    phonePreviewAudio = new Audio(URL.createObjectURL(blob));
+    phonePreviewAudio.volume = Math.min(1, Number(getSettings().volume) || 1);
+    phonePreviewAudio.onended = () => URL.revokeObjectURL(phonePreviewAudio.src);
+    phonePreviewAudio.play().catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 // Public API for other extensions: window.MultiCastTTS (apiVersion 1)
 // Keep its shape stable — other extensions depend on it. Add things; don't rename or remove.
 // ---------------------------------------------------------------------------
@@ -6429,6 +6592,13 @@ window.MultiCastTTS = Object.freeze({
     sfxAudio: (tagText) => apiSfxAudio(tagText),
     /** '효과음을 대사랑 겹쳐서 재생' setting. */
     sfxOverlay: () => !!getSettings().sfxOverlay,
+    /** 📞 Is '씬보이스 통화를 전화 목소리로' on (and MultiCast on)? */
+    isPhoneFilterOn: () => phoneFilterOn(),
+    /**
+     * 📞 A call's voice clip (Blob, blob/URL string or ArrayBuffer) → Promise<Blob (wav) | null>.
+     * null = the option is off or it failed → just play the original. The result has the same loudness as the input.
+     */
+    phoneAudio: (input) => apiPhoneAudio(input),
     /** Listen: 'playstart' { messageId } · 'playend' { messageId, reason: 'done' | 'stopped' | 'error' } · 'castchange' { scope: 'bot' | 'global', botKey }. Also fired on document as 'multicast:<type>'. */
     on: (type, fn) => {
         if (typeof fn !== 'function') return;
