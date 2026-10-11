@@ -161,6 +161,7 @@ function syncListeningUI() {
 
 function save() {
     SillyTavern.getContext().saveSettingsDebounced();
+    queueCastChangeCheck();
 }
 
 function modelInfo(id) {
@@ -6324,7 +6325,70 @@ function apiCastEntry(e, scope, botKey) {
         isUser: !!e.autoUser || names.some(n => n === SillyTavern.getContext().name1),
         scope,
         botKey: botKey ?? null,
+        temper: TEMPERS[e.temper] ? e.temper : '',
+        range: Number(e.range) >= 1 && Number(e.range) <= 5 ? Number(e.range) : null,
     };
+}
+
+// 'castchange' { scope: 'bot' | 'global', botKey }: fired (debounced) after a cast row is added, removed or changed.
+// Every cast edit goes through save(), so compare each list with how it looked last time instead of hooking each edit.
+// var (not let): save() can run before this part of the file is reached
+var castSigs = null;
+var castChangeTimer = null;
+function castSignatures() {
+    const s = getSettings();
+    const sigs = { global: JSON.stringify(s.cast ?? []) };
+    for (const [key, list] of Object.entries(s.castByBot ?? {})) sigs[`bot:${key}`] = JSON.stringify(list ?? []);
+    return sigs;
+}
+function queueCastChangeCheck() {
+    clearTimeout(castChangeTimer);
+    castChangeTimer = setTimeout(() => {
+        let now;
+        try { now = castSignatures(); } catch { return; }
+        const before = castSigs;
+        castSigs = now;
+        if (!before) return; // first look: nothing to compare with yet
+        for (const k of new Set([...Object.keys(before), ...Object.keys(now)])) {
+            if (before[k] === now[k]) continue;
+            if (k === 'global') emitApi('castchange', { scope: 'global', botKey: null });
+            else emitApi('castchange', { scope: 'bot', botKey: k.slice(4) });
+        }
+    }, 300);
+}
+
+/** Bundled + my own sound effects another extension may use (🔞 ones only while 🔞 성인 효과음 is on). */
+function apiListSfx() {
+    const out = [];
+    for (const c of customSfxLibrary()) {
+        const id = c.files[0].slice(CUSTOM_SFX_PREFIX.length);
+        const meta = (getSettings().customSfx ?? []).find(x => String(x.id) === String(id));
+        out.push({ name: String(meta?.name || c.words[0] || id), words: c.words.slice(), mine: true });
+    }
+    if (getSettings().sfxLocal !== false) {
+        for (const e of SFX_LIBRARY) if (e.files.length) out.push({ name: e.files[0], words: e.words.map(w => w.replace(/^~/, '')), mine: false });
+    }
+    return out;
+}
+
+/** The sound MultiCast would play for a tag like "[door slam]": { blob, loop } or null. */
+async function apiSfxAudio(tagText) {
+    const found = localSfxFor({ type: 'sfx', text: String(tagText ?? '').replace(/[[\]]/g, ' ') });
+    if (!found) return null;
+    const key = SFX_KEY_PREFIX + found;
+    if (isBlockedAdultKey(key)) return null;
+    try {
+        if (found.startsWith(CUSTOM_SFX_PREFIX)) {
+            const blob = await getCustomSfxStore()?.getItem(found.slice(CUSTOM_SFX_PREFIX.length));
+            return blob instanceof Blob ? { blob, loop: isLoopSfxKey(key) } : null;
+        }
+        const res = await fetch(SFX_BASE + encodeURIComponent(found) + '.mp3');
+        if (!res.ok) return null;
+        return { blob: await res.blob(), loop: false };
+    } catch (e) {
+        console.warn(LOG, 'sfxAudio failed', e);
+        return null;
+    }
 }
 
 window.MultiCastTTS = Object.freeze({
@@ -6355,7 +6419,17 @@ window.MultiCastTTS = Object.freeze({
         for (const e of s.cast ?? []) out.push(apiCastEntry(e, 'global', null));
         return out.filter(e => e.id && e.name);
     },
-    /** Listen: 'playstart' { messageId } · 'playend' { messageId, reason: 'done' | 'stopped' | 'error' }. Also fired on document as 'multicast:<type>'. */
+    /** Is MultiCast turned on (사용)? */
+    isEnabled: () => !!getSettings().enabled,
+    /** Is 듣는 방식 = 새 답변 자동으로 듣기? (holdAutoPlay is separate: see isAutoPlayHeld) */
+    isAutoPlayOn: () => !!getSettings().autoPlay,
+    /** Sound effects that can be used: [{ name, words: string[], mine: boolean }] (mine = the user's own sound). */
+    listSfx: () => apiListSfx(),
+    /** Sound for a tag text like "[door slam]" → Promise<{ blob: Blob, loop: boolean } | null>. loop = the user marked it 🔁. */
+    sfxAudio: (tagText) => apiSfxAudio(tagText),
+    /** '효과음을 대사랑 겹쳐서 재생' setting. */
+    sfxOverlay: () => !!getSettings().sfxOverlay,
+    /** Listen: 'playstart' { messageId } · 'playend' { messageId, reason: 'done' | 'stopped' | 'error' } · 'castchange' { scope: 'bot' | 'global', botKey }. Also fired on document as 'multicast:<type>'. */
     on: (type, fn) => {
         if (typeof fn !== 'function') return;
         if (!apiListeners.has(type)) apiListeners.set(type, new Set());
@@ -6440,5 +6514,6 @@ jQuery(async () => {
 
     console.log(LOG, 'loaded');
     // other extensions loaded earlier can wait for this (window.MultiCastTTS is already there)
+    try { castSigs = castSignatures(); } catch { /* ignore */ }
     emitApi('ready', { apiVersion: API_VERSION });
 });
