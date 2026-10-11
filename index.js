@@ -816,7 +816,9 @@ function soloScript(message, messageId, text) {
     const speaker = message.is_user ? userNameFor(messageId) : (message.name || ctx.name2 || 'unknown');
     const g = findCastEntry(speaker)?.gender;
     const gender = g === 'm' || g === 'f' ? g : 'u';
-    return quoteSegments(text).map(q => ({ speaker, gender, type: 'speech', tag: '', text: q.text }));
+    // 속마음 읽기 on → every *asterisk* piece is read too, as the speaker's inner voice (no AI to tell thoughts from actions)
+    const stars = !!getSettings().includeThoughts;
+    return quoteSegments(text, { stars }).map(q => ({ speaker, gender, type: q.kind === 'star' ? 'thought' : 'speech', tag: '', text: q.text }));
 }
 
 /** 빠른 분류: the message with ⟦n⟧ before every quote; the AI answers one short line per number. */
@@ -6119,7 +6121,7 @@ const MODE_HINTS = {
     full: 'AI가 지문까지 다 읽고 분류해요. 제일 정확하지만 느려요.',
     fast: '대사만 뽑아서 누가·어떤 감정인지 빠르게 분류해요.',
     inline: 'RP 모델이 답변을 쓰면서 같이 표시해요. 기다림 0초 · 빠진 대사는 빠른 분류로 메워요.',
-    solo: '분류 없이 전부 이 봇 목소리로 바로 읽어요. 봇마다 따로 기억해요.',
+    solo: '분류 없이 전부 이 봇 목소리로 바로 읽어요. 속마음 읽기를 켜면 *별표*도 속삭이듯 읽어요. 봇마다 따로 기억해요.',
 };
 
 function classifyMode() {
