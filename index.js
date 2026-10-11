@@ -5587,7 +5587,7 @@ function settingsHtml() {
                 <input id="voice_cast_rate" type="range" min="0.7" max="1.5" step="0.05" />
                 <div class="vc_section_title">📞 SceneVoice 통화 목소리</div>
                 <label class="checkbox_label"><input id="voice_cast_phone_on" type="checkbox" /><span>SceneVoice 통화를 전화 목소리로</span></label>
-                <div class="vc_hint vc_sub">SceneVoice 스마트폰 통화 음성에 전화기 필터를 씌워요. 크레딧 안 써요. SceneVoice가 이 기능을 지원하는 버전이어야 적용돼요.</div>
+                <div class="vc_hint vc_sub">SceneVoice 사용자만 쓸 수 있어요.</div>
                 <div class="vc_row">
                     <label for="voice_cast_phone_kind">종류</label>
                     <select id="voice_cast_phone_kind" class="text_pole">
