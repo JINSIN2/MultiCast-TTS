@@ -1003,3 +1003,211 @@ body.vc_hold_on #chat .mes_text {
 .vc_edit_row .vc_e_fav.vc_disabled {
     opacity: 0.25;
 }
+
+/* ---- Settings panel tidy-up (3.0.9 / 3.1.13) ---- */
+#voice_cast_settings .vc_top {
+    display: flex;
+    align-items: center;
+    margin: 2px 0 8px;
+}
+
+#voice_cast_settings .vc_quick_grid > .vc_row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0 0 4px;
+}
+
+#voice_cast_settings .vc_quick_grid .menu_button {
+    box-sizing: border-box;
+    margin: 0;
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+    text-align: center;
+    white-space: normal;
+    line-height: 1.25;
+    padding: 6px 4px;
+    font-size: 0.9em;
+}
+
+#voice_cast_settings .vc_listen_mode {
+    margin: 10px 0 8px;
+}
+
+#voice_cast_settings .vc_hidden_select {
+    display: none;
+}
+
+#voice_cast_settings .vc_lbl {
+    font-size: 0.85em;
+    opacity: 0.75;
+    margin: 6px 2px 3px;
+}
+
+/* segmented buttons (one choice) */
+#voice_cast_settings .vc_seg {
+    display: flex;
+    gap: 3px;
+    padding: 3px;
+    border-radius: 9px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    background: rgba(128, 128, 128, 0.08);
+}
+
+#voice_cast_settings .vc_seg_btn {
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: center;
+    padding: 5px 2px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 0.9em;
+    opacity: 0.7;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#voice_cast_settings .vc_seg_btn:hover {
+    opacity: 1;
+}
+
+#voice_cast_settings .vc_seg_btn.vc_on {
+    opacity: 1;
+    font-weight: bold;
+    background: var(--SmartThemeQuoteColor, rgba(232, 163, 61, 0.35));
+    color: var(--SmartThemeBodyColor, inherit);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+#voice_cast_settings .vc_seg_btn.vc_dim {
+    opacity: 0.35;
+}
+
+#voice_cast_settings .vc_mode_hint {
+    margin: 4px 2px 6px;
+}
+
+/* group headers: name left, status badge right */
+#voice_cast_settings .vc_group_title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+}
+
+#voice_cast_settings .vc_group_name {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#voice_cast_settings .vc_badge {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 60%;
+    font-size: 0.75em;
+    font-weight: normal;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: rgba(128, 128, 128, 0.15);
+    opacity: 0.85;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#voice_cast_settings .vc_badge.vc_warn {
+    background: rgba(232, 163, 61, 0.22);
+    color: var(--active, #e8a33d);
+    opacity: 1;
+}
+
+/* switches: the label text on the left, a small toggle on the right */
+#voice_cast_settings label.vc_sw {
+    display: flex;
+    flex-direction: row-reverse;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin: 6px 0 2px;
+}
+
+#voice_cast_settings label.vc_sw > span {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    flex: 0 0 auto;
+    width: 2.3em;
+    height: 1.3em;
+    margin: 0;
+    padding: 0;
+    border-radius: 999px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.5));
+    outline: none;
+    background: rgba(128, 128, 128, 0.35);
+    box-shadow: none;
+    filter: none;
+    transform: none;
+    cursor: pointer;
+    display: inline-block;
+    transition: background 0.15s ease;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 0.15em;
+    width: 0.95em;
+    height: 0.95em;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+    clip-path: none;
+    transform: translateY(-50%);
+    transition: left 0.15s ease;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked {
+    background: var(--active, #4b8f5a);
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked::before {
+    left: calc(100% - 1.1em);
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+#voice_cast_settings label.vc_sw.vc_master > span {
+    font-weight: bold;
+}
+
+#voice_cast_settings .vc_group[data-group="play"] input[type="range"] {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 2px 0 6px;
+}
+
+#voice_cast_settings .vc_pause_row > label {
+    flex: 1 1 100%;
+}
+
+#voice_cast_settings .vc_pause_row > .vc_pause_preset {
+    flex: 1 1 0;
+    min-width: 0;
+    margin: 0;
+    justify-content: center;
+    text-align: center;
+    box-sizing: border-box;
+}
