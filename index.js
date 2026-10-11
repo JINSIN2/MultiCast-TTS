@@ -785,6 +785,7 @@ function updateSoloUI() {
     $('#voice_cast_solo').prop('checked', on).prop('disabled', !bot);
     $('#voice_cast_solo_label').text(bot ? `이 봇(${bot.name})은 1인 모드` : '이 봇은 1인 모드 (채팅을 열면 고를 수 있어요)');
     $('#voice_cast_wand_solo_label').text(`MultiCast TTS: 1인 모드 ${on ? '켜짐' : '꺼짐'}`);
+    setTimeout(syncSettingsDecor, 0);
 }
 
 /** 1인 모드: every quote belongs to whoever wrote the message — no AI call, no wait. */
@@ -5379,6 +5380,7 @@ function setInlineTags(on) {
     getSettings().inlineTags = !!on;
     save();
     $('#voice_cast_inline').prop('checked', !!on);
+    setTimeout(syncSettingsDecor, 0);
     updateInlinePrompt();
     toastr.info(on ? '🚀 기다림 없이 바로 듣기 켬 (새로 받는 답변부터)' : '🚀 기다림 없이 바로 듣기 끔', 'MultiCast TTS', { timeOut: 1800 });
 }
@@ -5422,33 +5424,36 @@ function settingsHtml() {
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <label class="checkbox_label"><input id="voice_cast_enabled" type="checkbox" /><span>사용</span></label>
-                <div class="vc_row">
+                <div class="vc_top">
+                    <label class="checkbox_label vc_sw vc_master"><input id="voice_cast_enabled" type="checkbox" /><span>사용</span></label>
+                </div>
+                <div class="vc_quick_grid">
+                    <div class="vc_row">
                     <div id="voice_cast_stop" class="menu_button menu_button_icon"><i class="fa-solid fa-stop"></i><span>재생 정지</span></div>
                     <button type="button" id="voice_cast_generation_toggle" class="menu_button">음성 생성 중지</button>
-                    <div id="voice_cast_show_script" class="menu_button menu_button_icon"><i class="fa-solid fa-scroll"></i><span>마지막 대본 편집</span></div>
+                    <div id="voice_cast_show_script" class="menu_button menu_button_icon"><i class="fa-solid fa-scroll"></i><span>마지막 대본</span></div>
+                </div>
                 </div>
                 <div id="voice_cast_generation_status" class="vc_hint" role="status" aria-live="polite"></div>
                 <div class="vc_hint">재생 정지는 현재 재생과 그 재생의 대기열을 멈춰요. 음성 생성 중지는 미리 만들기를 포함한 새 생성을 막고, 현재 듣는 대사는 끝까지 재생해요.</div>
-                <div class="vc_listening_setup">
-                    <label for="voice_cast_listening_mode">듣는 방식</label>
+                <div class="vc_listen_mode">
+                    <div class="vc_lbl">듣는 방식</div>
+                    <div class="vc_seg" data-select="voice_cast_listening_mode" role="radiogroup" aria-label="듣는 방식">
+                        <div class="vc_seg_btn" data-v="manual" role="radio" tabindex="0">👆 눌러서</div>
+                        <div class="vc_seg_btn" data-v="auto" role="radio" tabindex="0">▶️ 자동</div>
+                        <div class="vc_seg_btn" data-v="read" role="radio" tabindex="0">📖 읽다가</div>
+                    </div>
+                    <div class="vc_hidden_select"><label for="voice_cast_listening_mode">듣는 방식</label>
                     <select id="voice_cast_listening_mode" class="text_pole">
                         <option value="manual">눌러서 듣기</option>
                         <option value="auto">새 답변 자동으로 듣기</option>
                         <option value="read">읽다가 대사만 듣기</option>
                     </select>
-                    <div id="voice_cast_listening_hint" class="vc_hint"></div>
-                    <label class="checkbox_label"><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기</span></label>
-                    <div class="vc_hint vc_sub">대본이 준비된 대사마다 ▶가 생겨요. 꽉 찬 ▶는 바로 재생, 빈 ▶는 누를 때 그 줄만 만들어요. '읽다가 대사만 듣기'에서는 끄더라도 보여요 (꾹 눌러서 듣기를 켜면 숨겨져요). 이어듣기를 켜면 ▶부터 쭉 이어서 들어요.</div>
-                    <label class="checkbox_label"><input id="voice_cast_hold" type="checkbox" /><span>대사 꾹 눌러서 듣기</span></label>
-                    <div class="vc_hint vc_sub">대사를 0.5초 누르고 있으면 그 줄을 들어요. 짧게 탭하는 건 번역기(원문 보기)에 그대로 양보해요. ▶ 버튼을 끄고 이것만 써도 돼요 (그럼 '읽다가 대사만 듣기'에서도 ▶가 안 떠요).</div>
-                    <div id="voice_cast_precreate_options">
-                        <label class="checkbox_label"><input id="voice_cast_precreate" type="checkbox" /><span>새 답변 음성을 미리 만들어두기</span></label>
-                        <div class="vc_hint vc_sub">누르면 바로 들을 수 있지만, 듣지 않은 대사도 생성 크레딧을 써요.</div>
                     </div>
                 </div>
+                <div id="voice_cast_listening_hint" class="vc_hint"></div>
                 <details class="vc_group" data-group="start">
-                    <summary class="vc_group_title">🔑 시작하기 · 키 · 모델 · 기본 목소리</summary>
+                    <summary class="vc_group_title"><span class="vc_group_name">🔑 시작하기</span><span class="vc_badge" data-badge="start"></span></summary>
                     <div class="vc_group_body">
                 <div class="vc_row">
                     <div id="voice_cast_key" class="menu_button menu_button_icon manage-api-keys" data-key="api_key_elevenlabs" title="실리태번 비밀 저장소에 키를 저장해요 (기본 TTS와 공유)">
@@ -5475,6 +5480,12 @@ function settingsHtml() {
                     <input id="voice_cast_custom_model" type="text" class="text_pole" placeholder="예: eleven_v5" />
                     <div class="vc_hint">일레븐랩스 문서에 나온 model_id를 그대로 적으면 돼요. 새 모델은 태그 지원으로 간주해요 (아래 체크박스로 끌 수 있어요).</div>
                 </div>
+                
+                    </div>
+                </details>
+                <details class="vc_group" data-group="cast">
+                    <summary class="vc_group_title"><span class="vc_group_name">🎭 목소리 · 캐스트</span><span class="vc_badge" data-badge="cast"></span></summary>
+                    <div class="vc_group_body">
                 <div class="vc_section_title">🗣️ 기본 목소리</div>
                 <div class="vc_row">
                     <div id="voice_cast_load_voices" class="menu_button menu_button_icon"><i class="fa-solid fa-rotate"></i><span>목소리 목록 불러오기</span></div>
@@ -5489,11 +5500,6 @@ function settingsHtml() {
                 <select id="voice_cast_female_voice" class="text_pole"></select>
                 <label for="voice_cast_unknown_voice">성별 모름 (비우면 남자 목소리)</label>
                 <select id="voice_cast_unknown_voice" class="text_pole"></select>
-                    </div>
-                </details>
-                <details class="vc_group" data-group="cast">
-                    <summary class="vc_group_title">🎭 캐스트 (캐릭터별 목소리)</summary>
-                    <div class="vc_group_body">
                 <div id="voice_cast_bot_cast_block">
                     <div id="voice_cast_bot_cast_title" class="vc_section_title">🎭 이 봇 캐스트</div>
                     <div class="vc_hint">이 봇 채팅방에서만 쓰는 목소리예요. 새 채팅을 열어도 그대로 유지돼요. 캐릭터와 페르소나 이름은 처음 한 번 자동으로 추가되고, 고치거나 지워도 다시 생기지 않아요.</div>
@@ -5509,9 +5515,37 @@ function settingsHtml() {
                     </div>
                 </details>
                 <details class="vc_group" data-group="play">
-                    <summary class="vc_group_title">▶️ 재생</summary>
+                    <summary class="vc_group_title"><span class="vc_group_name">🎧 듣기</span><span class="vc_badge" data-badge="play"></span></summary>
                     <div class="vc_group_body">
+                <label class="checkbox_label vc_sw"><input id="voice_cast_line_btns" type="checkbox" /><span>대사 옆에 ▶ 버튼 보이기</span></label>
+                    <div class="vc_hint vc_sub">대본이 준비된 대사마다 ▶가 생겨요. 꽉 찬 ▶는 바로 재생, 빈 ▶는 누를 때 그 줄만 만들어요. '읽다가 대사만 듣기'에서는 끄더라도 보여요 (꾹 눌러서 듣기를 켜면 숨겨져요). 이어듣기를 켜면 ▶부터 쭉 이어서 들어요.</div>
+                    <label class="checkbox_label vc_sw"><input id="voice_cast_hold" type="checkbox" /><span>대사 꾹 눌러서 듣기</span></label>
+                    <div class="vc_hint vc_sub">대사를 0.5초 누르고 있으면 그 줄을 들어요. 짧게 탭하는 건 번역기(원문 보기)에 그대로 양보해요. ▶ 버튼을 끄고 이것만 써도 돼요 (그럼 '읽다가 대사만 듣기'에서도 ▶가 안 떠요).</div>
+                    <div id="voice_cast_precreate_options">
+                        <label class="checkbox_label vc_sw"><input id="voice_cast_precreate" type="checkbox" /><span>새 답변 음성을 미리 만들어두기</span></label>
+                        <div class="vc_hint vc_sub">누르면 바로 들을 수 있지만, 듣지 않은 대사도 생성 크레딧을 써요.</div>
+                    </div>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_continue" type="checkbox" /><span>이어 듣기</span></label>
+                <div class="vc_hint vc_sub">메시지가 끝나면 다음 메시지로 자동으로 넘어가요</div>
                 <div class="vc_row">
+                    <label for="voice_cast_continue_mode">이어 들을 메시지</label>
+                    <select id="voice_cast_continue_mode" class="text_pole" style="width:auto">
+                        <option value="saved">이미 만든 음성만 (크레딧 X)</option>
+                        <option value="all">전부 (없으면 새로 만들기 · 크레딧 O)</option>
+                    </select>
+                </div>
+                <div class="vc_hint">⏮ ⏭는 메시지 끝에서 누르면 이전/다음 메시지로 넘어가요. 이미 만든 음성이 있는 메시지로만 넘어가서 크레딧을 안 써요 (깡통 · 유저 메시지 모두).</div>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_step" type="checkbox" /><span>한 줄씩 듣기</span></label>
+                <div class="vc_hint vc_sub">대사 하나 끝날 때마다 멈추고 ⏭를 기다려요 · 플레이어 '1' 버튼과 같아요</div>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_listen_on" type="checkbox" /><span>🎯 특정 캐릭터만 듣기</span></label>
+                <div class="vc_hint vc_sub">이 깡통에서만 · 체크 안 한 캐릭터는 건너뛰고 크레딧도 안 써요</div>
+                <div id="voice_cast_listen_list" class="vc_listen_list" style="display:none"></div>
+                <div class="vc_section_title">소리</div>
+                <label>볼륨: <span id="voice_cast_volume_val"></span></label>
+                <input id="voice_cast_volume" type="range" min="0" max="1" step="0.05" />
+                <label>재생 속도: <span id="voice_cast_rate_val"></span></label>
+                <input id="voice_cast_rate" type="range" min="0.7" max="1.5" step="0.05" />
+                <div class="vc_row vc_pause_row">
                     <label>🌬️ 호흡 (대사 사이 쉼)</label>
                     <div class="menu_button vc_pause_preset" data-preset="off">바로</div>
                     <div class="menu_button vc_pause_preset" data-preset="natural">자연스럽게</div>
@@ -5528,48 +5562,33 @@ function settingsHtml() {
                     <input id="voice_cast_pause_between" type="range" min="0" max="4000" step="100" />
                 </div>
                 <div class="vc_hint">대사 사이에 쉬는 시간을 직접 맞춰요. '사이 지문만큼'은 두 대사 사이 지문이 길수록 더 쉬어요 (100% = 지문을 읽는 시간쯤).</div>
-                <label class="checkbox_label"><input id="voice_cast_continue" type="checkbox" /><span>이어 듣기</span></label>
-                <div class="vc_hint vc_sub">메시지가 끝나면 다음 메시지로 자동으로 넘어가요</div>
-                <div class="vc_row">
-                    <label for="voice_cast_continue_mode">이어 들을 메시지</label>
-                    <select id="voice_cast_continue_mode" class="text_pole" style="width:auto">
-                        <option value="saved">이미 만든 음성만 (크레딧 X)</option>
-                        <option value="all">전부 (없으면 새로 만들기 · 크레딧 O)</option>
-                    </select>
-                </div>
-                <div class="vc_hint">⏮ ⏭는 메시지 끝에서 누르면 이전/다음 메시지로 넘어가요. 이미 만든 음성이 있는 메시지로만 넘어가서 크레딧을 안 써요 (깡통 · 유저 메시지 모두).</div>
-                <label class="checkbox_label"><input id="voice_cast_step" type="checkbox" /><span>한 줄씩 듣기</span></label>
-                <div class="vc_hint vc_sub">대사 하나 끝날 때마다 멈추고 ⏭를 기다려요 · 플레이어 '1' 버튼과 같아요</div>
-                <label class="checkbox_label"><input id="voice_cast_listen_on" type="checkbox" /><span>🎯 특정 캐릭터만 듣기</span></label>
-                <div class="vc_hint vc_sub">이 깡통에서만 · 체크 안 한 캐릭터는 건너뛰고 크레딧도 안 써요</div>
-                <div id="voice_cast_listen_list" class="vc_listen_list" style="display:none"></div>
-                <label>볼륨: <span id="voice_cast_volume_val"></span></label>
-                <input id="voice_cast_volume" type="range" min="0" max="1" step="0.05" />
-                <label>재생 속도: <span id="voice_cast_rate_val"></span></label>
-                <input id="voice_cast_rate" type="range" min="0.7" max="1.5" step="0.05" />
-                <div class="vc_row">
-                    <label for="voice_cast_translation_wait">자동 재생 시 번역 기다리기 (초, 0=안 기다림)</label>
-                    <input id="voice_cast_translation_wait" type="number" class="text_pole" min="0" max="60" step="1" style="width:70px" />
-                </div>
-                <div class="vc_row">
-                    <label for="voice_cast_concurrency">동시 생성 개수</label>
-                    <input id="voice_cast_concurrency" type="number" class="text_pole" min="1" max="5" step="1" style="width:60px" />
-                </div>
-                    </div>
-                </details>
-                <details class="vc_group" data-group="view">
-                    <summary class="vc_group_title">🎨 화면</summary>
-                    <div class="vc_group_body">
-                <label class="checkbox_label" title="입력창 위에 작은 손잡이가 생겨요. 위로 밀거나 누르면 플레이어가 올라와요."><input id="voice_cast_player" type="checkbox" /><span>🎧 하단 플레이어</span></label>
-                <div class="vc_hint vc_sub">입력창 위 짧은 선을 위로 밀거나 눌러서 열어요</div>
-                <label class="checkbox_label" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
-                <label class="checkbox_label"><input id="voice_cast_highlight" type="checkbox" /><span>읽는 대사 채팅에 형광펜 표시</span></label>
                     </div>
                 </details>
                 <details class="vc_group" data-group="acting">
-                    <summary class="vc_group_title">🧠 대사 분류 · 연기</summary>
+                    <summary class="vc_group_title"><span class="vc_group_name">🧠 대사 분류</span><span class="vc_badge" data-badge="acting"></span></summary>
                     <div class="vc_group_body">
-                <label class="checkbox_label"><input id="voice_cast_thoughts" type="checkbox" /><span>속마음(*별표*)도 읽기</span></label>
+                <div class="vc_section_title">🧠 대사 분류 AI</div>
+                <div class="vc_hint">비워두면 지금 연결된 메인 API를 써요. 싼 모델 프로필을 따로 골라두는 걸 추천!</div>
+                <select id="voice_cast_profile" class="text_pole"></select>
+                <div class="vc_lbl">분류 방식</div>
+                <div class="vc_seg" id="voice_cast_mode_seg" role="radiogroup" aria-label="분류 방식">
+                    <div class="vc_seg_btn" data-v="full" role="radio" tabindex="0">전체</div>
+                    <div class="vc_seg_btn" data-v="fast" role="radio" tabindex="0">⚡ 빠른</div>
+                    <div class="vc_seg_btn" data-v="inline" role="radio" tabindex="0">🚀 바로 듣기</div>
+                    <div class="vc_seg_btn" data-v="solo" role="radio" tabindex="0">👤 1인</div>
+                </div>
+                <div id="voice_cast_mode_hint" class="vc_hint vc_sub vc_mode_hint"></div>
+                <div class="vc_mode_hidden" hidden>
+                <label class="checkbox_label"><input id="voice_cast_solo" type="checkbox" /><span id="voice_cast_solo_label">이 봇은 1인 모드</span></label>
+                <div class="vc_hint vc_sub">👤 AI 분류 없이 따옴표 대사를 전부 이 봇 목소리로 바로 읽어요 (내 메시지는 내 목소리). 기다림·비용 0. 감정 태그와 효과음은 빠지고, 조연 대사도 봇 목소리로 나와요. 봇마다 따로 기억해요.</div>
+                <label class="checkbox_label"><input id="voice_cast_inline" type="checkbox" /><span>🚀 기다림 없이 바로 듣기</span></label>
+                <div class="vc_hint vc_sub">분류 대기 없이 바로 재생돼요. 대신 RP 모델이 태그를 같이 써서 답장마다 토큰이 조금 늘어요.</div>
+                <div class="vc_hint vc_sub">태그는 화면에 안 보이고 대본을 만든 뒤 지워져요. 모델이 빼먹은 대사만 빠른 분류로 메워요. 켠 뒤 새로 받는 답변부터 적용되고, 답변이 이상해지면 꺼주세요.</div>
+                
+                <label class="checkbox_label"><input id="voice_cast_fast" type="checkbox" /><span>⚡ 빠른 분류</span></label>
+                <div class="vc_hint vc_sub">따옴표 대사를 확장이 먼저 뽑고, AI는 누가·어떤 감정인지만 짧게 답해요. 훨씬 빨라요. 속마음 읽기를 켜면 *별표* 구간도 AI가 속마음인지 지문인지 골라요. 따옴표·별표가 없거나 'AI 번역해서 읽기'를 켜면 원래 방식으로 해요.</div>
+                </div>
+                <div id="voice_cast_inline_stats" class="vc_hint vc_sub"></div>
                 <div class="vc_row">
                     <label for="voice_cast_voice_lang">🌐 음성 언어</label>
                     <select id="voice_cast_voice_lang" class="text_pole" style="width:auto">
@@ -5593,25 +5612,12 @@ function settingsHtml() {
                     <input id="voice_cast_translate_to" type="text" class="text_pole" style="width:140px; display:none" placeholder="예: Italian" />
                 </div>
                 <div class="vc_hint">원문/번역은 메시지마다 따로 저장돼서 왔다 갔다 해도 다시 만들지 않아요. 요술봉(🪄) 메뉴에서도 바로 바꿀 수 있어요.</div>
-                <div class="vc_section_title">🧠 대사 분류 AI</div>
-                <div class="vc_hint">비워두면 지금 연결된 메인 API를 써요. 싼 모델 프로필을 따로 골라두는 걸 추천!</div>
-                <select id="voice_cast_profile" class="text_pole"></select>
-                <label class="checkbox_label"><input id="voice_cast_solo" type="checkbox" /><span id="voice_cast_solo_label">이 봇은 1인 모드</span></label>
-                <div class="vc_hint vc_sub">👤 AI 분류 없이 따옴표 대사를 전부 이 봇 목소리로 바로 읽어요 (내 메시지는 내 목소리). 기다림·비용 0. 감정 태그와 효과음은 빠지고, 조연 대사도 봇 목소리로 나와요. 봇마다 따로 기억해요.</div>
-                <label class="checkbox_label"><input id="voice_cast_inline" type="checkbox" /><span>🚀 기다림 없이 바로 듣기</span></label>
-                <div class="vc_hint vc_sub">분류 대기 없이 바로 재생돼요. 대신 RP 모델이 태그를 같이 써서 답장마다 토큰이 조금 늘어요.</div>
-                <div class="vc_hint vc_sub">태그는 화면에 안 보이고 대본을 만든 뒤 지워져요. 모델이 빼먹은 대사만 빠른 분류로 메워요. 켠 뒤 새로 받는 답변부터 적용되고, 답변이 이상해지면 꺼주세요.</div>
-                <div id="voice_cast_inline_stats" class="vc_hint vc_sub"></div>
-                <label class="checkbox_label"><input id="voice_cast_fast" type="checkbox" /><span>⚡ 빠른 분류</span></label>
-                <div class="vc_hint vc_sub">따옴표 대사를 확장이 먼저 뽑고, AI는 누가·어떤 감정인지만 짧게 답해요. 훨씬 빨라요. 속마음 읽기를 켜면 *별표* 구간도 AI가 속마음인지 지문인지 골라요. 따옴표·별표가 없거나 'AI 번역해서 읽기'를 켜면 원래 방식으로 해요.</div>
-                <div class="vc_row">
-                    <label for="voice_cast_max_tokens">최대 응답 토큰</label>
-                    <input id="voice_cast_max_tokens" type="number" class="text_pole" min="256" max="16000" step="128" style="width:90px" />
-                </div>
-                <div class="vc_row">
-                    <label for="voice_cast_context_chars">이전 메시지 참고 길이 (글자, 0=안 씀)</label>
-                    <input id="voice_cast_context_chars" type="number" class="text_pole" min="0" max="10000" step="100" style="width:90px" />
-                </div>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_thoughts" type="checkbox" /><span>속마음(*별표*)도 읽기</span></label>
+                    </div>
+                </details>
+                <details class="vc_group" data-group="perform">
+                    <summary class="vc_group_title"><span class="vc_group_name">🎬 연기</span><span class="vc_badge" data-badge="perform"></span></summary>
+                    <div class="vc_group_body">
                 <div class="vc_row">
                     <label for="voice_cast_emotion">🎭 감정 연기 강도</label>
                     <select id="voice_cast_emotion" class="text_pole" style="width:auto">
@@ -5623,7 +5629,7 @@ function settingsHtml() {
                 <div class="vc_hint">감정 폭을 따로 안 정한 캐릭터의 기본값이에요 (은은하게 2 · 자연스럽게 3 · 과감하게 5). 캐릭터마다 성격·감정 폭은 캐스트 줄의 🎚에서 정해요. 새로 분류하는 대사부터 적용돼요.</div>
                 <label for="voice_cast_extra">추가 지시 (선택, 영어 권장)</label>
                 <textarea id="voice_cast_extra" class="text_pole" rows="2" placeholder="e.g. Lines in 「」 are phone calls."></textarea>
-                <label class="checkbox_label"><input id="voice_cast_use_tags" type="checkbox" /><span>감정 태그로 연기시키기</span></label>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_use_tags" type="checkbox" /><span>감정 태그로 연기시키기</span></label>
                 <div class="vc_hint vc_sub">[angry] 같은 태그 · v3/v4 전용</div>
                 <div class="vc_row">
                     <label for="voice_cast_thought_tag">속마음에 붙일 태그</label>
@@ -5636,15 +5642,15 @@ function settingsHtml() {
                     </div>
                 </details>
                 <details class="vc_group" data-group="sfx">
-                    <summary class="vc_group_title">🔔 효과음</summary>
+                    <summary class="vc_group_title"><span class="vc_group_name">🔔 효과음</span><span class="vc_badge" data-badge="sfx"></span></summary>
                     <div class="vc_group_body">
-                <label class="checkbox_label"><input id="voice_cast_sfx" type="checkbox" /><span>효과음 넣기</span></label>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_sfx" type="checkbox" /><span>효과음 넣기</span></label>
                 <div class="vc_hint vc_sub">지문의 문 쾅, 발소리 같은 소리를 대본에 따로 한 줄로 넣어요</div>
-                <label class="checkbox_label"><input id="voice_cast_sfx_overlay" type="checkbox" /><span>효과음을 대사랑 겹쳐서 재생</span></label>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_sfx_overlay" type="checkbox" /><span>효과음을 대사랑 겹쳐서 재생</span></label>
                 <div class="vc_hint vc_sub">효과음이 따로 차례를 기다리지 않고 대사 밑에 깔려요</div>
-                <label class="checkbox_label"><input id="voice_cast_sfx_adult" type="checkbox" /><span>🔞 성인 장면 효과음도 넣기</span></label>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_sfx_adult" type="checkbox" /><span>🔞 성인 장면 효과음도 넣기</span></label>
                 <div class="vc_hint vc_sub">키스·젖은 소리·살 부딪히는 소리 같은 것도 효과음 줄로 넣어요. 소리 파일은 아래 '내 효과음'에 직접 넣고 영어 단어(kiss, wet, slap, slurp …)를 붙인 뒤 🔞 버튼을 켜주세요. 🔞 켠 소리는 이 옵션이 켜져 있을 때만 나와요. 한 메시지에 최대 8개까지 넣어요. 분류 AI나 ElevenLabs가 거절하면 안 나올 수 있어요.</div>
-                <label class="checkbox_label"><input id="voice_cast_sfx_local" type="checkbox" /><span>내장 효과음 파일 먼저 쓰기</span></label>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_sfx_local" type="checkbox" /><span>내장 효과음 파일 먼저 쓰기</span></label>
                 <div class="vc_hint vc_sub">문, 발소리, 총소리, 천둥 등 47개 소리가 들어 있어요. 크레딧을 안 쓰고 어느 모델에서나 나와요.</div>
                 <div class="vc_hint">내장 소리에 맞는 게 없으면 ElevenLabs [태그]로 만들어요. 이건 Eleven v3 / v4 / v4 Turbo처럼 [태그]를 아는 모델에서만 나와요. 효과음은 대사와 섞지 않고 대본에 🔔 효과음 줄로 따로 들어가서, 편집기에서 고치거나 지울 수 있어요. 켠 뒤 새로 분류하는 메시지부터 들어가요.</div>
                 <div class="vc_custom_sfx">
@@ -5665,8 +5671,17 @@ function settingsHtml() {
                 <select id="voice_cast_sfx_voice" class="text_pole"></select>
                     </div>
                 </details>
+                <details class="vc_group" data-group="view">
+                    <summary class="vc_group_title"><span class="vc_group_name">🎨 화면</span><span class="vc_badge" data-badge="view"></span></summary>
+                    <div class="vc_group_body">
+                <label class="checkbox_label vc_sw" title="입력창 위에 작은 손잡이가 생겨요. 위로 밀거나 누르면 플레이어가 올라와요."><input id="voice_cast_player" type="checkbox" /><span>🎧 하단 플레이어</span></label>
+                <div class="vc_hint vc_sub">입력창 위 짧은 선을 위로 밀거나 눌러서 열어요</div>
+                <label class="checkbox_label vc_sw" title="메시지 … 메뉴를 열지 않아도 🔊(재생)과 📜(대본) 버튼이 메시지에 바로 보여요."><input id="voice_cast_quick" type="checkbox" /><span>🔊 📜 버튼 메시지에 바로 보이기</span></label>
+                <label class="checkbox_label vc_sw"><input id="voice_cast_highlight" type="checkbox" /><span>읽는 대사 채팅에 형광펜 표시</span></label>
+                    </div>
+                </details>
                 <details class="vc_group" data-group="store">
-                    <summary class="vc_group_title">💾 저장된 음성 · 설정 옮기기</summary>
+                    <summary class="vc_group_title"><span class="vc_group_name">💾 저장 · 백업</span><span class="vc_badge" data-badge="store"></span></summary>
                     <div class="vc_group_body">
                 <div class="vc_hint">한 번 만든 음성은 이 브라우저에 저장돼서 다시 들을 땐 크레딧을 안 써요. 용량을 넘으면 오래된 것부터 지워져요.</div>
                 <div class="vc_row">
@@ -5685,6 +5700,27 @@ function settingsHtml() {
                     <div id="voice_cast_export" class="menu_button menu_button_icon"><i class="fa-solid fa-file-export"></i><span>내보내기</span></div>
                     <div id="voice_cast_import" class="menu_button menu_button_icon"><i class="fa-solid fa-file-import"></i><span>가져오기</span></div>
                     <input id="voice_cast_import_file" type="file" accept=".json,application/json" style="display:none" />
+                </div>
+                    </div>
+                </details>
+                <details class="vc_group" data-group="advanced">
+                    <summary class="vc_group_title"><span class="vc_group_name">⚙️ 고급</span></summary>
+                    <div class="vc_group_body">
+                <div class="vc_row">
+                    <label for="voice_cast_max_tokens">최대 응답 토큰</label>
+                    <input id="voice_cast_max_tokens" type="number" class="text_pole" min="256" max="16000" step="128" style="width:90px" />
+                </div>
+                <div class="vc_row">
+                    <label for="voice_cast_context_chars">이전 메시지 참고 길이 (글자, 0=안 씀)</label>
+                    <input id="voice_cast_context_chars" type="number" class="text_pole" min="0" max="10000" step="100" style="width:90px" />
+                </div>
+                <div class="vc_row">
+                    <label for="voice_cast_translation_wait">자동 재생 시 번역 기다리기 (초, 0=안 기다림)</label>
+                    <input id="voice_cast_translation_wait" type="number" class="text_pole" min="0" max="60" step="1" style="width:70px" />
+                </div>
+                <div class="vc_row">
+                    <label for="voice_cast_concurrency">동시 생성 개수</label>
+                    <input id="voice_cast_concurrency" type="number" class="text_pole" min="1" max="5" step="1" style="width:60px" />
                 </div>
                     </div>
                 </details>
@@ -6008,6 +6044,7 @@ function bindSettingsUI() {
     });
     $('#voice_cast_show_script').on('click', showLastScript);
     foldLongHints();
+    initSettingsDecor();
 }
 
 /**
@@ -6038,6 +6075,114 @@ function foldLongHints() {
             $(this).before($('<div class="vc_info_row"></div>').append($i, ' <span class="vc_hint">설명</span>'));
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Settings panel decor: segmented buttons, 분류 방식, little status badges on each group
+// ---------------------------------------------------------------------------
+
+const MODE_HINTS = {
+    full: 'AI가 지문까지 다 읽고 분류해요. 제일 정확하지만 느려요.',
+    fast: '대사만 뽑아서 누가·어떤 감정인지 빠르게 분류해요.',
+    inline: 'RP 모델이 답변을 쓰면서 같이 표시해요. 기다림 0초 · 빠진 대사는 빠른 분류로 메워요.',
+    solo: '분류 없이 전부 이 봇 목소리로 바로 읽어요. 봇마다 따로 기억해요.',
+};
+
+function classifyMode() {
+    const s = getSettings();
+    if (soloOn()) return 'solo';
+    if (s.inlineTags) return 'inline';
+    return s.fastClassify ? 'fast' : 'full';
+}
+
+function setClassifyMode(mode) {
+    const s = getSettings();
+    if (mode === 'solo') {
+        if (!currentBot()) { toastr.info('1인 모드는 채팅을 연 다음 고를 수 있어요.', 'MultiCast TTS'); return; }
+        if (!soloOn()) setSolo(true);
+    } else {
+        if (soloOn()) setSolo(false);
+        const inline = mode === 'inline';
+        if (!!s.inlineTags !== inline) setInlineTags(inline);
+        s.fastClassify = mode === 'fast' || inline; // 🚀 falls back to ⚡ when the tags are missing
+        $('#voice_cast_fast').prop('checked', s.fastClassify);
+        save();
+        updateInlinePrompt();
+    }
+    syncSettingsDecor();
+}
+
+function syncSettingsDecor() {
+    const $root = $('#voice_cast_settings');
+    if (!$root.length) return;
+    $root.find('.vc_seg[data-select]').each(function () {
+        const v = String($('#' + this.dataset.select).val() ?? '');
+        $(this).find('.vc_seg_btn').each(function () {
+            const on = this.dataset.v === v;
+            this.classList.toggle('vc_on', on);
+            this.setAttribute('aria-checked', String(on));
+        });
+    });
+    const mode = classifyMode();
+    $('#voice_cast_mode_seg .vc_seg_btn').each(function () {
+        const on = this.dataset.v === mode;
+        this.classList.toggle('vc_on', on);
+        this.setAttribute('aria-checked', String(on));
+        if (this.dataset.v === 'solo') this.classList.toggle('vc_dim', !currentBot());
+    });
+    $('#voice_cast_mode_hint').text(MODE_HINTS[mode] ?? '');
+    $('#voice_cast_inline_stats').toggle(mode === 'inline');
+    updateGroupBadges();
+}
+
+function updateGroupBadges() {
+    const s = getSettings();
+    const put = (key, text, warn = false) => {
+        $(`#voice_cast_settings .vc_badge[data-badge="${key}"]`).text(text).toggleClass('vc_warn', !!warn).toggle(!!text);
+    };
+    put('start', voiceList.length ? `✅ 연결됨 · ${modelInfo(s.model).label}` : modelInfo(s.model).label);
+    const cast = getBotCast() ?? [];
+    const noVoice = cast.filter(e => !e.voiceId && String(e.names ?? '').trim()).length;
+    put('cast', noVoice ? `목소리 없는 캐릭터 ${noVoice}` : (cast.length ? `${cast.length}명` : ''), noVoice > 0);
+    const listenBits = [s.continuePlay && '이어 듣기', s.lineButtons && '▶', s.holdToPlay && '꾹', s.stepMode && '한 줄씩'].filter(Boolean);
+    put('play', listenBits.join(' · '));
+    put('acting', { full: '전체 분류', fast: '⚡ 빠른 분류', inline: '🚀 바로 듣기', solo: '👤 1인' }[classifyMode()]);
+    put('perform', { subtle: '은은하게', natural: '자연스럽게', strong: '과감하게' }[s.emotionLevel] ?? '');
+    const mine = (s.customSfx ?? []).length;
+    put('sfx', s.sfxEnabled ? ['켜짐', s.adultSfx && '🔞', mine && `내 소리 ${mine}`].filter(Boolean).join(' · ') : '꺼짐');
+    put('view', [s.player && '플레이어', s.highlight && '형광펜', s.quickButtons && '🔊📜'].filter(Boolean).join(' · '));
+    if (storeIndex) {
+        const mb = Object.values(storeIndex).reduce((a, v) => a + (v?.size || 0), 0) / 1048576;
+        put('store', `${mb.toFixed(0)} / ${s.audioCacheMB}MB`);
+    }
+}
+
+let decorTimer = null;
+function initSettingsDecor() {
+    const $root = $('#voice_cast_settings');
+    $root.on('click keydown', '.vc_seg[data-select] .vc_seg_btn', function (e) {
+        if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        const $sel = $('#' + $(this).closest('.vc_seg').data('select'));
+        if ($sel.val() !== this.dataset.v) $sel.val(this.dataset.v).trigger('change');
+        syncSettingsDecor();
+    });
+    $root.on('click keydown', '#voice_cast_mode_seg .vc_seg_btn', function (e) {
+        if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        setClassifyMode(this.dataset.v);
+    });
+    // anything changed in the panel (or elsewhere: 요술봉, slash commands) → refresh the badges a moment later
+    $root.on('change input click', () => {
+        clearTimeout(decorTimer);
+        decorTimer = setTimeout(syncSettingsDecor, 150);
+    });
+    try {
+        const { eventSource, event_types } = SillyTavern.getContext();
+        eventSource.on(event_types.CHAT_CHANGED, () => setTimeout(syncSettingsDecor, 300));
+    } catch { /* ignore */ }
+    loadIndex().then(() => syncSettingsDecor()).catch(() => {});
+    syncSettingsDecor();
 }
 
 /** Handlers for the per-character settings panel (lives in its own window). */
