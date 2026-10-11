@@ -5585,9 +5585,9 @@ function settingsHtml() {
                 <input id="voice_cast_volume" type="range" min="0" max="1" step="0.05" />
                 <label>재생 속도: <span id="voice_cast_rate_val"></span></label>
                 <input id="voice_cast_rate" type="range" min="0.7" max="1.5" step="0.05" />
-                <div class="vc_section_title">📞 씬보이스 통화 목소리</div>
-                <label class="checkbox_label"><input id="voice_cast_phone_on" type="checkbox" /><span>씬보이스 통화를 전화 목소리로</span></label>
-                <div class="vc_hint vc_sub">씬보이스 스마트폰 통화 음성에 전화기 필터를 씌워요. 크레딧 안 써요. 씬보이스가 이 기능을 지원하는 버전이어야 적용돼요.</div>
+                <div class="vc_section_title">📞 SceneVoice 통화 목소리</div>
+                <label class="checkbox_label"><input id="voice_cast_phone_on" type="checkbox" /><span>SceneVoice 통화를 전화 목소리로</span></label>
+                <div class="vc_hint vc_sub">SceneVoice 스마트폰 통화 음성에 전화기 필터를 씌워요. 크레딧 안 써요. SceneVoice가 이 기능을 지원하는 버전이어야 적용돼요.</div>
                 <div class="vc_row">
                     <label for="voice_cast_phone_kind">종류</label>
                     <select id="voice_cast_phone_kind" class="text_pole">
@@ -6592,7 +6592,7 @@ window.MultiCastTTS = Object.freeze({
     sfxAudio: (tagText) => apiSfxAudio(tagText),
     /** '효과음을 대사랑 겹쳐서 재생' setting. */
     sfxOverlay: () => !!getSettings().sfxOverlay,
-    /** 📞 Is '씬보이스 통화를 전화 목소리로' on (and MultiCast on)? */
+    /** 📞 Is 'SceneVoice 통화를 전화 목소리로' on (and MultiCast on)? */
     isPhoneFilterOn: () => phoneFilterOn(),
     /**
      * 📞 A call's voice clip (Blob, blob/URL string or ArrayBuffer) → Promise<Blob (wav) | null>.
