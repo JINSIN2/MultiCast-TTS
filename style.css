@@ -1124,7 +1124,8 @@ body.vc_hold_on #chat .mes_text {
     opacity: 1;
 }
 
-/* switches: the label text on the left, a small toggle on the right */
+/* switches: the label text on the left, a small toggle on the right.
+   !important on the toggle itself: some themes restyle every checkbox (round, fixed size) and would turn it into a circle */
 #voice_cast_settings label.vc_sw {
     display: flex;
     flex-direction: row-reverse;
@@ -1140,51 +1141,70 @@ body.vc_hold_on #chat .mes_text {
 }
 
 #voice_cast_settings label.vc_sw > input[type="checkbox"] {
-    appearance: none;
-    -webkit-appearance: none;
-    position: relative;
-    flex: 0 0 auto;
-    width: 2.3em;
-    height: 1.3em;
-    margin: 0;
-    padding: 0;
-    border-radius: 999px;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.5));
-    outline: none;
-    background: rgba(128, 128, 128, 0.35);
-    box-shadow: none;
-    filter: none;
-    transform: none;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    position: relative !important;
+    flex: 0 0 auto !important;
+    box-sizing: border-box !important;
+    width: 2.4em !important;
+    min-width: 2.4em !important;
+    max-width: 2.4em !important;
+    height: 1.35em !important;
+    min-height: 1.35em !important;
+    max-height: 1.35em !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 999px !important;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.5)) !important;
+    outline: none !important;
+    background: rgba(128, 128, 128, 0.35) !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    transform: none !important;
     cursor: pointer;
-    display: inline-block;
-    transition: background 0.15s ease;
+    display: inline-block !important;
+    overflow: hidden !important;
+    transition: background-color 0.15s ease;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]::after {
+    content: none !important;
+    display: none !important;
 }
 
 #voice_cast_settings label.vc_sw > input[type="checkbox"]::before {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 0.15em;
-    width: 0.95em;
-    height: 0.95em;
-    border-radius: 50%;
-    background: #fff;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-    clip-path: none;
-    transform: translateY(-50%);
+    content: "" !important;
+    display: block !important;
+    position: absolute !important;
+    top: 50% !important;
+    left: 0.15em !important;
+    width: 0.95em !important;
+    height: 0.95em !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 50% !important;
+    background: #fff !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35) !important;
+    clip-path: none !important;
+    -webkit-mask: none !important;
+    mask: none !important;
+    opacity: 1 !important;
+    transform: translateY(-50%) !important;
     transition: left 0.15s ease;
 }
 
 #voice_cast_settings label.vc_sw > input[type="checkbox"]:checked {
-    background: var(--active, #4b8f5a);
+    background: #f52d56 !important; /* cherry, same red as the MultiCast icon */
+    border-color: transparent !important;
 }
 
 #voice_cast_settings label.vc_sw > input[type="checkbox"]:checked::before {
-    left: calc(100% - 1.1em);
+    left: calc(100% - 1.1em) !important;
 }
 
 #voice_cast_settings label.vc_sw > input[type="checkbox"]:disabled {
-    opacity: 0.4;
+    opacity: 0.4 !important;
     cursor: not-allowed;
 }
 

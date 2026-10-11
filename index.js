@@ -6574,6 +6574,34 @@ window.MultiCastTTS = Object.freeze({
     sfxAudio: (tagText) => apiSfxAudio(tagText),
     /** '효과음을 대사랑 겹쳐서 재생' setting. */
     sfxOverlay: () => !!getSettings().sfxOverlay,
+    /**
+     * Voice settings MultiCast uses to make a line → { model, stability, similarity, style, speed, playbackRate }.
+     * Pass { speaker } to get that character's own values (cast row overrides / emotional range).
+     * style and speed are what MultiCast sends (ElevenLabs defaults: 0 and 1); playbackRate is its 재생 속도,
+     * applied only while playing (not baked into the file).
+     */
+    getVoiceSettings: ({ speaker = '' } = {}) => {
+        const s = getSettings();
+        const v = voiceSettingsFor(speaker ? { speaker: String(speaker) } : null);
+        let stability = Number(v.stability);
+        if (modelInfo(s.model).snapStability) stability = [0, 0.5, 1].reduce((a, b) => (Math.abs(b - stability) < Math.abs(a - stability) ? b : a));
+        return { model: String(s.model || ''), stability, similarity: Number(v.similarity), style: 0, speed: 1, playbackRate: Number(s.rate) || 1 };
+    },
+    /**
+     * Volumes (multipliers, 1 = 100%) → { master, character, sfx, sfxOverlay, sfxLoop }.
+     * Pass { speaker } for that character's volume. A sound effect that takes its own turn plays at master × sfx;
+     * one layered under the voices (겹쳐 재생) at master × sfxOverlay; a 🔁 loop at master × sfxLoop.
+     */
+    getVolumes: ({ speaker = '' } = {}) => {
+        const m = Number(getSettings().volume);
+        return {
+            master: Number.isNaN(m) ? 1 : Math.max(0, m),
+            character: speaker ? castVolumeFor({ speaker: String(speaker) }) : 1,
+            sfx: castVolumeFor({ speaker: 'SFX', type: 'sfx' }),
+            sfxOverlay: 0.85,
+            sfxLoop: 0.3,
+        };
+    },
     /** Listen: 'playstart' { messageId } · 'playend' { messageId, reason: 'done' | 'stopped' | 'error' } · 'castchange' { scope: 'bot' | 'global', botKey }. Also fired on document as 'multicast:<type>'. */
     on: (type, fn) => {
         if (typeof fn !== 'function') return;
