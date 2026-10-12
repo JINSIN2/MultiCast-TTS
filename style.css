@@ -1231,3 +1231,21 @@ body.vc_hold_on #chat .mes_text {
     text-align: center;
     box-sizing: border-box;
 }
+
+/* 📜 editor: small tool row under the title */
+.vc_editor .vc_editor_tools {
+    display: flex;
+    justify-content: flex-end;
+    margin: -4px 0 6px;
+}
+
+.vc_editor .vc_editor_tools .menu_button {
+    margin: 0;
+    padding: 3px 9px;
+    font-size: 0.8em;
+    opacity: 0.8;
+}
+
+.vc_editor .vc_editor_tools .menu_button:hover {
+    opacity: 1;
+}

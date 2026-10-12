@@ -1406,6 +1406,35 @@ function fixUserSpeaker(script, messageId) {
     }
 }
 
+/** 📜 Forget this message's scripts (every voice language + older versions). Audio files stay in the cache. */
+async function clearMessageScripts(messageId) {
+    const ctx = SillyTavern.getContext();
+    const message = ctx.chat?.[messageId];
+    if (!message?.extra?.[MODULE_NAME]) return false;
+    if (playingMessageId === messageId) stopPlayback();
+    delete message.extra[MODULE_NAME];
+    await ctx.saveChat();
+    redecorateMessage(messageId);
+    return true;
+}
+
+/** 📜 Forget every script in the open chat (all swipes too). Returns how many messages had one. */
+async function clearChatScripts() {
+    const ctx = SillyTavern.getContext();
+    let n = 0;
+    stopPlayback();
+    for (const message of ctx.chat ?? []) {
+        if (message?.extra?.[MODULE_NAME]) { delete message.extra[MODULE_NAME]; n++; }
+        for (const info of Array.isArray(message?.swipe_info) ? message.swipe_info : []) {
+            if (info?.extra?.[MODULE_NAME]) delete info.extra[MODULE_NAME];
+        }
+    }
+    await ctx.saveChat();
+    refreshLineButtons({ rebuild: true });
+    markAllScriptButtons();
+    return n;
+}
+
 /** Make an older script the current one again; the current one becomes an older version. */
 async function restoreScriptVersion(messageId, historyIndex, script) {
     const ctx = SillyTavern.getContext();
@@ -3346,7 +3375,7 @@ async function playHeldLine(mesEl, point) {
     const messageId = Number(mesEl.getAttribute('mesid'));
     const root = mesEl.querySelector('.mes_text');
     const message = SillyTavern.getContext().chat?.[messageId];
-    if (Number.isNaN(messageId) || !root || !message || message.is_system) return;
+    if (Number.isNaN(messageId) || !root || !message || !isVoiceableMessage(message)) return;
     let script = getStoredEntry(message)?.script;
     if (!Array.isArray(script)) {
         toastr.info('대사 분류 중...', 'MultiCast TTS', { timeOut: 1500 });
@@ -3416,12 +3445,23 @@ function removeLineButtons(root) {
     root.normalize();
 }
 
+/**
+ * Messages that get ▶ / 꾹 누르기 / 📜: everything except real system notices.
+ * Text a Quick Reply put in with /comment or /sys (narrator) counts too — it's story text, just shown differently.
+ */
+function isVoiceableMessage(message) {
+    if (!message) return false;
+    if (!message.is_system) return true;
+    const type = String(message.extra?.type ?? '');
+    return type === 'comment' || type === 'narrator';
+}
+
 function decorateMessage(messageId) {
     if (!lineButtonsOn()) return;
     const root = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`);
     if (!root || root.querySelector(`.${LINE_BTN}`)) return;
     const message = SillyTavern.getContext().chat?.[messageId];
-    if (!message || message.is_system) return;
+    if (!message || !isVoiceableMessage(message)) return;
     const script = getStoredEntry(message)?.script;
     if (!Array.isArray(script)) return;
     // once a script exists, every line that will be voiced gets a ▶ (hollow = not made yet, made on tap)
@@ -3469,7 +3509,7 @@ function markScriptButton(messageId) {
     const btns = document.querySelectorAll(`#chat .mes[mesid="${messageId}"] .vc_edit_btn`);
     if (!btns.length) return;
     const message = SillyTavern.getContext().chat?.[messageId];
-    const has = !!message && !message.is_system && hasScriptFor(message);
+    const has = !!message && isVoiceableMessage(message) && hasScriptFor(message);
     for (const b of btns) {
         b.style.opacity = '';
         b.classList.toggle('vc_has_script', has);
@@ -3525,7 +3565,7 @@ function findStepTarget(from, dir, make) {
     let start = from.index + dir;
     for (let hops = 0; hops < 200 && mesId >= 0 && mesId < chat.length; hops++) {
         const script = getStoredEntry(chat[mesId])?.script;
-        if (Array.isArray(script) && !chat[mesId]?.is_system) {
+        if (Array.isArray(script) && chat[mesId] && isVoiceableMessage(chat[mesId])) {
             if (start === null) start = dir > 0 ? 0 : script.length - 1;
             for (let j = start; j >= 0 && j < script.length; j += dir) {
                 if (ok(script, script[j])) return { messageId: mesId, index: j };
@@ -4279,7 +4319,7 @@ async function reclassifyAndPlay(messageId) {
 function prepareFreeScript(messageId) {
     const s = getSettings();
     const message = SillyTavern.getContext().chat?.[messageId];
-    if (!message || message.is_user || message.is_system || s.voiceLang === 'translate') return;
+    if (!message || message.is_user || !isVoiceableMessage(message) || s.voiceLang === 'translate') return;
     const free = soloOn() || (s.inlineTags && alignVoiceTags(message, getMessageText(message))?.missing.length === 0);
     if (free) getScript(messageId).catch(e => console.debug(LOG, 'free script failed', e));
 }
@@ -4310,6 +4350,23 @@ async function onCharacterMessageRendered(messageId, type) {
     if (readMode() !== 'off') prepareMessage(messageId);
     else if (s.autoPlay && !autoHolds.size) playMessage(messageId);
     else preloadMessage(messageId); // auto play on hold (another extension asked, e.g. during a call) → just get it ready
+}
+
+/**
+ * /sys (narrator) and /comment from a Quick Reply arrive as USER_MESSAGE_RENDERED, not CHARACTER_MESSAGE_RENDERED,
+ * so they never got the on-arrival prep a bot reply gets (free script → ▶ buttons, 📜 marked).
+ * Same prep here — but never auto play (a QR result suddenly talking would be a surprise).
+ */
+function onQrMessageRendered(messageId) {
+    const message = SillyTavern.getContext().chat?.[messageId];
+    if (!message || message.is_user || !String(message.extra?.type ?? '').match(/^(?:comment|narrator)$/) || !isVoiceableMessage(message)) return;
+    hideVoiceTagText(document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_text`));
+    const s = getSettings();
+    if (generationPaused || !s.enabled) return;
+    prepareFreeScript(messageId);
+    if (readMode() !== 'off') prepareMessage(messageId);
+    else if (s.pregenerate) preloadMessage(messageId);
+    markScriptButton(messageId);
 }
 
 /** Classify + generate a message's audio in the background without playing it. */
@@ -4985,6 +5042,7 @@ function buildEditor(messageId, script) {
     const $editor = $(`
         <div class="vc_editor">
             <h3>📜 메시지 #${messageId} 대본</h3>
+            <div class="vc_editor_tools"><div class="menu_button menu_button_icon vc_del_scripts" title="이 메시지의 대본을 모든 음성 언어 · 이전 대본까지 한 번에 지워요. 만든 음성 파일은 남아요."><i class="fa-solid fa-trash-can"></i><span>이 메시지 대본 지우기</span></div></div>
             <details class="vc_hint vc_editor_help">
                 <summary>고친 줄만 새로 만들고, 안 고친 줄은 저장된 음성을 다시 써요. ⓘ</summary>
                 화자·성별·목소리·태그·대사를 고칠 수 있어요.
@@ -5193,7 +5251,19 @@ async function openScriptEditor(messageId) {
         popup.dlg?.classList.add('vc_editor_popup');
         popupDlg = popup.dlg ?? null;
         syncButtons();
+        let wiped = false;
+        $editor.on('click', '.vc_del_scripts', async () => {
+            const ok = await ctx.Popup.show.confirm('MultiCast TTS', '이 메시지의 대본을 전부 지울까요? 모든 음성 언어와 이전 대본까지 지워져요. 만든 음성 파일은 남아요.');
+            if (!ok) return;
+            await clearMessageScripts(messageId);
+            wiped = true;
+            popup.completeCancelled?.();
+        });
         const result = await popup.show();
+        if (wiped) {
+            toastr.success('이 메시지 대본을 지웠어요. 다시 들으면 새로 분류해요.', 'MultiCast TTS', { timeOut: 2000 });
+            return;
+        }
         const edited = readEditor($editor);
         const changed = JSON.stringify(edited) !== JSON.stringify(script);
 
@@ -5730,6 +5800,11 @@ function settingsHtml() {
                     <div id="voice_cast_all_list" class="menu_button menu_button_icon"><i class="fa-solid fa-folder-open"></i><span>모든 봇 음성 · ⭐</span></div>
                     <div id="voice_cast_cache_clear" class="menu_button menu_button_icon"><i class="fa-solid fa-broom"></i><span>전부 지우기</span></div>
                 </div>
+                <div class="vc_section_title">📜 대본 지우기</div>
+                <div class="vc_hint">이 채팅에 저장된 대본(모든 음성 언어 · 이전 대본)을 전부 지워요. 만들어둔 음성 파일은 남고, 다시 들으면 대사를 새로 분류해요.</div>
+                <div class="vc_row">
+                    <div id="voice_cast_clear_scripts" class="menu_button menu_button_icon"><i class="fa-solid fa-scroll"></i><span>이 채팅 대본 전부 지우기</span></div>
+                </div>
                 <div class="vc_section_title">📦 설정 옮기기</div>
                 <div class="vc_hint">캐스트(봇별·공통), 기본 목소리, 분류·연기 설정을 파일 하나로 저장하고 다른 기기에서 불러와요. API 키는 들어가지 않아요.</div>
                 <div class="vc_row">
@@ -5982,6 +6057,13 @@ function bindSettingsUI() {
     };
     refreshCacheStats();
     $('#voice_cast_settings .inline-drawer-toggle').on('click', () => { refreshCacheStats(); renderListenList(); });
+    $('#voice_cast_clear_scripts').on('click', async () => {
+        if (!(ctx.chat ?? []).length) { toastr.info('채팅을 먼저 열어주세요.', 'MultiCast TTS'); return; }
+        const ok = await ctx.Popup.show.confirm('MultiCast TTS', '이 채팅의 대본을 전부 지울까요? 모든 음성 언어와 이전 대본까지 지워져요. 만든 음성 파일은 남고, 다시 들으면 대사를 새로 분류해요(분류 AI 사용).');
+        if (!ok) return;
+        const n = await clearChatScripts();
+        toastr.success(n ? `대본 ${n}개를 지웠어요.` : '지울 대본이 없어요.', 'MultiCast TTS');
+    });
     $('#voice_cast_cache_clear').on('click', async () => {
         const ok = await ctx.Popup.show.confirm('MultiCast TTS', '저장된 음성을 전부 지울까요? ⭐ 즐겨찾기한 음성은 남겨요. 다시 들으면 새로 생성돼요(크레딧 사용).');
         if (!ok) return;
@@ -6652,6 +6734,7 @@ jQuery(async () => {
     $(document).on('click', '.vc_status', (e) => { e.stopPropagation(); stopPlayback(); });
 
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
+    if (event_types.USER_MESSAGE_RENDERED) eventSource.on(event_types.USER_MESSAGE_RENDERED, onQrMessageRendered);
     // the instruction depends on several settings (효과음, 성인, 내 효과음…) → refresh it right before each reply
     if (event_types.GENERATION_STARTED) eventSource.on(event_types.GENERATION_STARTED, updateInlinePrompt);
     eventSource.on(event_types.CHAT_CHANGED, () => {
