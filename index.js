@@ -154,10 +154,10 @@ function syncListeningUI() {
     $('#voice_cast_precreate_options').toggle(mode !== 'auto');
     $('#voice_cast_precreate').prop('checked', mode === 'read' ? s.readMode === 'all' : s.pregenerate);
     $('#voice_cast_listening_hint').text(mode === 'auto'
-        ? '새 답변의 대사를 만들고 바로 재생해요. 음성 생성에 크레딧을 써요.'
+        ? '새 답변을 바로 읽어줘요 · 크레딧 사용'
         : mode === 'read'
-            ? '새 답변의 대사를 AI로 분류해요. 아래 ▶ 표시를 켜면 대사별로 들을 수 있어요. 기본적으로 누른 대사만 음성을 만들며, 분류 AI 사용료는 별도예요.'
-            : '메시지의 🔊를 누르면 대사를 분류하고 재생해요. 저장된 음성은 다시 사용해요.');
+            ? '새 답변을 분류해두고, 누른 대사만 음성을 만들어요'
+            : '🔊를 누르면 그 메시지를 읽어줘요');
 }
 
 function save() {
@@ -806,7 +806,7 @@ function updateSoloUI() {
     const on = soloOn();
     const bot = currentBot();
     $('#voice_cast_solo').prop('checked', on).prop('disabled', !bot);
-    $('#voice_cast_solo_label').text(bot ? `이 봇(${bot.name})은 1인 모드` : '이 봇은 1인 모드 (채팅을 열면 고를 수 있어요)');
+    $('#voice_cast_solo_label').text(bot ? `이 깡통(${bot.name})은 1인 모드` : '이 깡통은 1인 모드 (채팅을 열면 고를 수 있어요)');
     $('#voice_cast_wand_solo_label').text(`MultiCast TTS: 1인 모드 ${on ? '켜짐' : '꺼짐'}`);
     setTimeout(syncSettingsDecor, 0);
 }
@@ -1947,14 +1947,14 @@ async function openAllVoices({ favOnly = false } = {}) {
     backfillFromMessages(ctx.chat, currentBot()?.name || ctx.name2 || '', index); // this chat is already in memory
     saveIndexSoon();
     const $box = $(`
-        <div class="vc_saved">
-            <div class="vc_saved_head"><b>모든 봇의 대사 음성</b> <span class="vc_hint vc_all_count"></span>
-                ${ctx.chat?.length ? '<span class="menu_button menu_button_icon vc_switch_list"><i class="fa-solid fa-list"></i><span>이 채팅만 보기</span></span>' : ''}</div>
+        <div class="vc_saved vc_ui">
+            <div class="vc_saved_head"><b>모든 깡통의 대사 음성</b> <span class="vc_hint vc_all_count"></span>
+                ${ctx.chat?.length ? '<span class="vc_btn vc_switch_list"><i class="fa-solid fa-list"></i><span>이 채팅만 보기</span></span>' : ''}</div>
             <div class="vc_saved_filters">
-                <select class="text_pole vc_all_bot"><option value="">모든 봇</option></select>
-                <select class="text_pole vc_all_speaker"><option value="">모든 캐릭터</option></select>
-                <input class="text_pole vc_saved_search" type="search" placeholder="대사 검색" />
-                <label class="checkbox_label vc_saved_favonly"><input type="checkbox" class="vc_all_fav" /><span>⭐만</span></label>
+                <select class="vc_field vc_all_bot"><option value="">모든 깡통</option></select>
+                <select class="vc_field vc_all_speaker"><option value="">모든 캐릭터</option></select>
+                <input class="vc_field vc_saved_search" type="search" placeholder="대사 검색" />
+                <label class="vc_check vc_saved_favonly"><input type="checkbox" class="vc_all_fav" /><span>⭐만</span></label>
             </div>
             <div class="vc_all_unknown vc_hint"></div>
             <div class="vc_saved_list"></div>
@@ -1965,7 +1965,7 @@ async function openAllVoices({ favOnly = false } = {}) {
     const fillSelects = () => {
         const bot = String($box.find('.vc_all_bot').val() ?? '');
         const bots = [...new Set(entries().map(([, m]) => m.info.bot || '(알 수 없음)'))].sort();
-        $box.find('.vc_all_bot').html('<option value="">모든 봇</option>' + bots.map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('')).val(bots.includes(bot) ? bot : '');
+        $box.find('.vc_all_bot').html('<option value="">모든 깡통</option>' + bots.map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('')).val(bots.includes(bot) ? bot : '');
         const curBot = String($box.find('.vc_all_bot').val() ?? '');
         const who = String($box.find('.vc_all_speaker').val() ?? '');
         const speakers = [...new Set(entries().filter(([, m]) => !curBot || (m.info.bot || '(알 수 없음)') === curBot).map(([, m]) => m.info.speaker || '?'))].sort();
@@ -1976,7 +1976,7 @@ async function openAllVoices({ favOnly = false } = {}) {
         const $u = $box.find('.vc_all_unknown').empty();
         if (!n) return;
         $u.append(`예전에 만든 음성 ${n}개는 어느 대사인지 아직 몰라요. `);
-        const $btn = $('<span class="menu_button menu_button_icon vc_all_scan"><i class="fa-solid fa-magnifying-glass"></i><span>예전 채팅 훑기</span></span>');
+        const $btn = $('<span class="vc_btn vc_all_scan"><i class="fa-solid fa-magnifying-glass"></i><span>예전 채팅 훑기</span></span>');
         $btn.on('click', async () => {
             $btn.addClass('disabled');
             const $st = $('<span class="vc_hint"> 훑는 중…</span>');
@@ -2043,7 +2043,7 @@ async function openAllVoices({ favOnly = false } = {}) {
             });
             $list.append($row);
         }
-        if (shown.length > 500) $list.append('<div class="vc_hint">최근 500개까지 보여요. 봇이나 캐릭터를 골라서 좁혀보세요.</div>');
+        if (shown.length > 500) $list.append('<div class="vc_hint">최근 500개까지 보여요. 깡통이나 캐릭터를 골라서 좁혀보세요.</div>');
         if (clipPlayKey) setClipPlaying(clipPlayKey);
     };
     $box.find('.vc_all_bot').on('change', () => { fillSelects(); render(); });
@@ -2051,6 +2051,7 @@ async function openAllVoices({ favOnly = false } = {}) {
     $box.find('.vc_saved_search').on('input', render);
     fillSelects();
     render();
+    themeProof($box[0]);
     const popup = new ctx.Popup($box, ctx.POPUP_TYPE.TEXT, '', { okButton: '닫기', wide: true, allowVerticalScrolling: true, leftAlign: true });
     popup.dlg?.classList.add('vc_editor_popup');
     let switchTo = null;
@@ -2089,9 +2090,9 @@ function updateGenerationUI() {
     $('#voice_cast_generation_toggle').text(generationPaused ? '생성 다시 허용' : '음성 생성 중지');
     $('#voice_cast_generation_status').text(generationPaused
         ? (activeGenerationRequests
-            ? '생성 중지 · 이미 요청한 ' + activeGenerationRequests + '개는 완료 후 저장해요. 요청 취소·크레딧 환불을 뜻하지 않아요.'
-            : '생성 중지 · 저장된 음성은 들을 수 있어요. 다시 허용해도 취소한 대기열은 자동으로 재시작하지 않아요.')
-        : (activeGenerationRequests ? '음성 생성 요청 처리 중 ' + activeGenerationRequests + '개' : '생성 허용 · 필요한 음성이 없을 때 새로 만들어요.'));
+            ? '⏸ 생성 중지 중 · 이미 요청한 ' + activeGenerationRequests + '개는 끝나면 저장돼요 (환불 안 됨)'
+            : '⏸ 생성 중지 중 · 저장된 음성만 재생돼요')
+        : (activeGenerationRequests ? '음성 만드는 중 · ' + activeGenerationRequests + '개' : ''));
 }
 
 function stopGeneration() {
@@ -3793,15 +3794,15 @@ async function openSavedList() {
     const speakers = [...new Set(items.map(i => i.line.speaker || '?'))].sort();
 
     const $box = $(`
-        <div class="vc_saved">
+        <div class="vc_saved vc_ui">
             <div class="vc_saved_head">
                 <b>이 채팅에서 만든 대사 음성</b> <span class="vc_hint">${items.length}개</span>
-                <span class="menu_button menu_button_icon vc_switch_list"><i class="fa-solid fa-folder-open"></i><span>모든 봇 보기</span></span>
+                <span class="vc_btn vc_switch_list"><i class="fa-solid fa-folder-open"></i><span>모든 깡통 보기</span></span>
             </div>
             <div class="vc_saved_filters">
-                <select class="text_pole vc_saved_speaker"><option value="">모든 캐릭터</option>${speakers.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</select>
-                <input class="text_pole vc_saved_search" type="search" placeholder="대사 검색" />
-                <label class="checkbox_label vc_saved_favonly"><input type="checkbox" class="vc_saved_fav_only" /><span>⭐만</span></label>
+                <select class="vc_field vc_saved_speaker"><option value="">모든 캐릭터</option>${speakers.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}</select>
+                <input class="vc_field vc_saved_search" type="search" placeholder="대사 검색" />
+                <label class="vc_check vc_saved_favonly"><input type="checkbox" class="vc_saved_fav_only" /><span>⭐만</span></label>
             </div>
             <div class="vc_saved_list"></div>
         </div>`);
@@ -3871,6 +3872,7 @@ async function openSavedList() {
     });
     render();
 
+    themeProof($box[0]);
     const popup = new ctx.Popup($box, ctx.POPUP_TYPE.TEXT, '', {
         okButton: '닫기',
         wide: true,
@@ -4727,32 +4729,166 @@ function castArray(scope) {
     return scope === 'bot' ? getBotCast(true) : getSettings().cast;
 }
 
+// --- 형광펜 색: our own colour wheel (the browser's colour input looks and works differently on every device) ---
+const COLOR_DEFAULT = '#ffd54f';
+const COLOR_SWATCHES = ['#ffd54f', '#ffb74d', '#ff8a65', '#f06292', '#ba68c8', '#9575cd', '#7986cb', '#64b5f6', '#4dd0e1', '#4db6ac', '#81c784', '#dce775'];
+
+function hsvToHex(h, s, v) {
+    const f = (n) => {
+        const k = (n + h / 60) % 6;
+        const c = v - v * s * Math.max(0, Math.min(k, 4 - k, 1));
+        return Math.round(c * 255).toString(16).padStart(2, '0');
+    };
+    return `#${f(5)}${f(3)}${f(1)}`;
+}
+
+function hexToHsv(hex) {
+    const m = /^#([0-9a-f]{6})$/i.exec(String(hex ?? ''));
+    if (!m) return null;
+    const r = parseInt(m[1].slice(0, 2), 16) / 255, g = parseInt(m[1].slice(2, 4), 16) / 255, b = parseInt(m[1].slice(4, 6), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let h = 0;
+    if (d) {
+        if (max === r) h = ((g - b) / d) % 6;
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h = (h * 60 + 360) % 360;
+    }
+    return { h, s: max ? d / max : 0, v: max };
+}
+
+function colorPickerHtml() {
+    return `
+            <div class="vc_color">
+                <input type="hidden" class="vc_cast_color" />
+                <div class="vc_color_swatches" role="radiogroup" aria-label="추천 색">
+                    ${COLOR_SWATCHES.map(c => `<div class="vc_color_sw" role="radio" tabindex="0" data-c="${c}" style="background:${c}" title="${c}"></div>`).join('')}
+                </div>
+                <div class="vc_color_body">
+                    <div class="vc_color_wheel_wrap">
+                        <canvas class="vc_color_wheel" width="280" height="280" role="img" aria-label="색상표: 짚거나 끌어서 색을 골라요"></canvas>
+                        <div class="vc_color_dot"></div>
+                    </div>
+                    <div class="vc_color_side">
+                        <div class="vc_color_preview"><span class="vc_color_sample">“이렇게 칠해져요.”</span></div>
+                        <div class="vc_hint vc_color_state"></div>
+                        <input type="text" class="vc_field vc_color_hex" maxlength="7" placeholder="${COLOR_DEFAULT}" spellcheck="false" autocapitalize="off" autocomplete="off" title="색 코드를 직접 적어도 돼요" />
+                        <div class="vc_btn vc_cast_color_reset" title="기본 형광펜 색으로"><i class="fa-solid fa-xmark"></i><span>기본색</span></div>
+                    </div>
+                </div>
+            </div>`;
+}
+
+/** Hue goes round the circle, the colour gets paler toward the middle. Drawn once per canvas. */
+function drawColorWheel(canvas) {
+    if (!canvas || canvas.dataset.vcDrawn) return;
+    const ctx = canvas.getContext?.('2d');
+    if (!ctx) return;
+    const size = canvas.width, R = size / 2;
+    const img = ctx.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const dx = x + 0.5 - R, dy = y + 0.5 - R;
+            const d = Math.sqrt(dx * dx + dy * dy);
+            if (d > R) continue;
+            const hex = hsvToHex((Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360, Math.min(1, d / (R - 1)), 1);
+            const i = (y * size + x) * 4;
+            img.data[i] = parseInt(hex.slice(1, 3), 16);
+            img.data[i + 1] = parseInt(hex.slice(3, 5), 16);
+            img.data[i + 2] = parseInt(hex.slice(5, 7), 16);
+            img.data[i + 3] = d > R - 1 ? Math.round((R - d) * 255) : 255; // soft edge
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+    canvas.dataset.vcDrawn = '1';
+}
+
+/** Show `color` ('' = this character uses the default highlight) in the wheel, preview, code field and swatches. */
+function syncColorPicker($row, color) {
+    const $p = $row.find('.vc_color');
+    if (!$p.length) return;
+    drawColorWheel($p.find('.vc_color_wheel')[0]);
+    const set = /^#[0-9a-f]{6}$/i.test(color ?? '');
+    const hex = set ? color.toLowerCase() : '';
+    $p.toggleClass('vc_color_unset', !set);
+    $p.find('.vc_cast_color').val(hex || COLOR_DEFAULT);
+    const hsv = hexToHsv(hex || COLOR_DEFAULT);
+    const a = hsv.h * Math.PI / 180;
+    $p.find('.vc_color_dot').css({ left: `${50 + Math.cos(a) * hsv.s * 50}%`, top: `${50 + Math.sin(a) * hsv.s * 50}%`, background: hex || COLOR_DEFAULT });
+    const rgb = [1, 3, 5].map(i => parseInt((hex || COLOR_DEFAULT).slice(i, i + 2), 16));
+    $p.find('.vc_color_sample').css('background-color', set ? `rgba(${rgb.join(', ')}, 0.4)` : '');
+    $p.find('.vc_color_state').text(set ? '이 캐릭터 대사는 이 색으로 칠해져요.' : '기본 형광펜 색을 쓰는 중이에요. 색을 고르면 이 캐릭터만 바뀌어요.');
+    const hexField = $p.find('.vc_color_hex')[0];
+    if (hexField && document.activeElement !== hexField) hexField.value = hex;
+    $p.find('.vc_color_sw').each(function () {
+        const on = set && this.dataset.c === hex;
+        this.classList.toggle('vc_on', on);
+        this.setAttribute('aria-checked', String(on));
+    });
+}
+
+/** A colour was picked: store it through the same hidden field the old colour input used, then redraw. */
+function pickColor($row, hex) {
+    if (!/^#[0-9a-f]{6}$/i.test(hex)) return;
+    $row.find('.vc_cast_color').val(hex.toLowerCase()).trigger('input');
+    syncColorPicker($row, hex);
+}
+
+function bindColorPicker($root) {
+    const fromPointer = (canvas, ev) => {
+        const e = ev.originalEvent ?? ev;
+        const r = canvas.getBoundingClientRect();
+        const R = r.width / 2;
+        if (!R) return;
+        const dx = e.clientX - (r.left + R), dy = e.clientY - (r.top + R);
+        const sat = Math.min(1, Math.sqrt(dx * dx + dy * dy) / R);
+        pickColor($(canvas).closest('.vc_cast_row'), hsvToHex((Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360, sat, 1));
+    };
+    let dragging = null;
+    $root
+        .on('pointerdown', '.vc_color_wheel', function (e) {
+            dragging = this;
+            try { this.setPointerCapture((e.originalEvent ?? e).pointerId); } catch { /* ignore */ }
+            e.preventDefault();
+            fromPointer(this, e);
+        })
+        .on('pointermove', '.vc_color_wheel', function (e) { if (dragging === this) fromPointer(this, e); })
+        .on('pointerup pointercancel lostpointercapture', '.vc_color_wheel', () => { dragging = null; })
+        .on('click keydown', '.vc_color_sw', function (e) {
+            if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            pickColor($(this).closest('.vc_cast_row'), String(this.dataset.c));
+        })
+        .on('input', '.vc_color_hex', function () {
+            let v = String(this.value ?? '').trim();
+            if (v && !v.startsWith('#')) v = `#${v}`;
+            if (/^#[0-9a-f]{6}$/i.test(v)) pickColor($(this).closest('.vc_cast_row'), v);
+        });
+}
+
 /** The per-character settings panel (opened in its own window from the ⚙ on a cast row). */
 function castAdvHtml() {
     return `
         <div class="vc_cast_adv">
             <div class="vc_row">
                 <label>성격</label>
-                <select class="text_pole vc_cast_temper" style="width:auto">
+                <select class="vc_field vc_cast_temper" style="width:auto">
                     <option value="">기본 (대사대로)</option>
                     ${Object.entries(TEMPERS).map(([k, t]) => `<option value="${k}">${t.label}</option>`).join('')}
                 </select>
             </div>
             <div class="vc_row">
                 <label>감정 폭</label>
-                <select class="text_pole vc_cast_range" style="width:auto">
+                <select class="vc_field vc_cast_range" style="width:auto">
                     <option value="">기본</option>
                     ${Object.entries(RANGE_LABELS).map(([k, l]) => `<option value="${k}">${k} · ${l}</option>`).join('')}
                 </select>
                 <span class="vc_hint vc_cast_range_hint"></span>
             </div>
-            <input type="text" class="text_pole vc_cast_always" placeholder="항상 붙일 태그 (영어, 쉼표로) 예: soft-spoken, slow drawl" title="이 캐릭터 대사마다 [태그]로 붙어서 말투를 일정하게 잡아줘요. v3/v4 전용. 1~2개 추천." />
-            <input type="text" class="text_pole vc_cast_note" placeholder="연기 메모 (선택) 예: 화나도 목소리 안 높임, 말끝을 흐림" />
-            <div class="vc_row">
-                <label>형광펜 색</label>
-                <input type="color" class="vc_cast_color" />
-                <div class="menu_button menu_button_icon vc_cast_color_reset" title="기본 형광펜 색으로"><i class="fa-solid fa-xmark"></i><span>기본색</span></div>
-            </div>
+            <input type="text" class="vc_field vc_cast_always" placeholder="항상 붙일 태그 (영어, 쉼표로) 예: soft-spoken, slow drawl" title="이 캐릭터 대사마다 [태그]로 붙어서 말투를 일정하게 잡아줘요. v3/v4 전용. 1~2개 추천." />
+            <input type="text" class="vc_field vc_cast_note" placeholder="연기 메모 (선택) 예: 화나도 목소리 안 높임, 말끝을 흐림" />
+            <label>형광펜 색</label>
+            ${colorPickerHtml()}
             <label>음량: <span class="vc_cast_vol_val"></span></label>
             <input type="range" class="vc_cast_vol" min="0" max="2" step="0.05" />
             <label>속도: <span class="vc_cast_rate_val"></span></label>
@@ -4763,7 +4899,7 @@ function castAdvHtml() {
             <input type="range" class="vc_cast_sim" min="0" max="1" step="0.05" />
             <div class="vc_row">
                 <span class="vc_hint">낮은 Stability = 감정 폭이 크고 들쭉날쭉 · 높으면 차분하고 일정해요.</span>
-                <div class="menu_button menu_button_icon vc_cast_adv_reset"><i class="fa-solid fa-rotate-left"></i><span>공통 설정 따르기</span></div>
+                <div class="vc_btn vc_cast_adv_reset"><i class="fa-solid fa-rotate-left"></i><span>공통 설정 따르기</span></div>
             </div>
         </div>`;
 }
@@ -4781,8 +4917,7 @@ function fillCastAdv($row, entry) {
     $row.find('.vc_cast_range_hint').text(entry.range ? '' : `지금 ${rangeFor(entry)} · ${RANGE_LABELS[rangeFor(entry)]}`);
     $row.find('.vc_cast_note').val(entry.actingNote ?? '');
     $row.find('.vc_cast_always').val(entry.alwaysTags ?? '');
-    $row.find('.vc_cast_color').val(/^#[0-9a-f]{6}$/i.test(entry.color ?? '') ? entry.color : '#ffd54f');
-    $row.find('.vc_cast_color').toggleClass('vc_color_unset', !entry.color);
+    syncColorPicker($row, /^#[0-9a-f]{6}$/i.test(entry.color ?? '') ? entry.color : '');
     const vol = entry.volume ?? null;
     $row.find('.vc_cast_vol').val(vol ?? 1);
     $row.find('.vc_cast_vol_val').text(vol === null ? '100%' : `${Math.round(vol * 100)}%`);
@@ -4800,7 +4935,7 @@ async function openCastAdvPopup(scope, i) {
     const before = structuredClone(entry);
     const name = String(entry.names ?? '').split(',')[0]?.trim() || '이름 없는 캐릭터';
     const $box = $(`
-        <div class="vc_cast_popup">
+        <div class="vc_cast_popup vc_ui">
             <h3>🎭 <span class="vc_cast_popup_name"></span> 설정</h3>
             <div class="vc_cast_row" data-scope="${scope}" data-index="${i}">${castAdvHtml()}</div>
         </div>`);
@@ -4809,9 +4944,11 @@ async function openCastAdvPopup(scope, i) {
     const refill = () => { const e = castArray(scope)?.[i]; if (e) fillCastAdv($row, e); };
     refill();
     bindCastAdvHandlers($box);
+    bindColorPicker($box);
     // re-read after changes that reset or recompute other fields
     $box.on('change', '.vc_cast_temper, .vc_cast_range', () => setTimeout(refill, 0));
     $box.on('click', '.vc_cast_color_reset, .vc_cast_adv_reset', () => setTimeout(refill, 0));
+    themeProof($box[0]);
     const popup = new ctx.Popup($box, ctx.POPUP_TYPE.TEXT, '', { okButton: '저장', cancelButton: '취소', wide: false, leftAlign: true, allowVerticalScrolling: true });
     popup.dlg?.classList.add('vc_cast_popup_dlg');
     const result = await popup.show();
@@ -4839,7 +4976,7 @@ function renderCastList() {
             return;
         }
         list.forEach((entry, i) => {
-            const moveTitle = scope === 'bot' ? '공통 캐스트로 옮기기 (모든 봇에 적용)' : '이 봇 캐스트로 옮기기';
+            const moveTitle = scope === 'bot' ? '공통 캐스트로 옮기기 (모든 깡통에 적용)' : '이 깡통 캐스트로 옮기기';
             const hasCustom = ['stability', 'similarity', 'volume', 'rate', 'temper', 'range', 'actingNote', 'alwaysTags', 'color'].some(k => (entry[k] ?? '') !== '');
             const $row = $(`
                 <div class="vc_cast_row" data-index="${i}" data-scope="${scope}">
@@ -4863,7 +5000,7 @@ function renderCastList() {
     };
 
     if (bot) {
-        $('#voice_cast_bot_cast_title').text(`🎭 이 봇 캐스트 — ${bot.name}`);
+        $('#voice_cast_bot_cast_title').text(`🎭 이 깡통 캐스트 — ${bot.name}`);
         $('#voice_cast_bot_cast_block').show();
         $('#voice_cast_no_bot').hide();
         renderInto($('#voice_cast_bot_cast_list'), getBotCast(true), 'bot');
@@ -4939,19 +5076,19 @@ function editorRowHtml() {
     return `
     <div class="vc_edit_row">
         <div class="vc_edit_head">
-            <select class="text_pole vc_e_type" title="종류">
+            <select class="vc_field vc_e_type" title="종류">
                 <option value="speech">💬 대사</option>
                 <option value="thought">💭 속마음</option>
                 <option value="sfx">🔔 효과음</option>
             </select>
-            <input type="text" class="text_pole vc_e_speaker" placeholder="화자" title="화자 이름 (캐스트 표와 매칭돼요)" />
-            <select class="text_pole vc_e_gender" title="성별">
+            <input type="text" class="vc_field vc_e_speaker" placeholder="화자" title="화자 이름 (캐스트 표와 매칭돼요)" />
+            <select class="vc_field vc_e_gender" title="성별">
                 <option value="u">?</option>
                 <option value="m">남</option>
                 <option value="f">여</option>
             </select>
-            <select class="text_pole vc_e_voice" title="목소리 (자동 = 캐스트 표/성별로 결정)"></select>
-            <input type="text" class="text_pole vc_e_tag" placeholder="태그 (예: angry)" title="감정/연기 태그. 비우면 태그 없이 읽어요" />
+            <select class="vc_field vc_e_voice" title="목소리 (자동 = 캐스트 표/성별로 결정)"></select>
+            <input type="text" class="vc_field vc_e_tag" placeholder="태그 (예: angry)" title="감정/연기 태그. 비우면 태그 없이 읽어요" />
             <div class="vc_e_btns">
                 <span class="vc_e_has fa-solid fa-circle-check" title="이 줄 음성이 이미 만들어져 있어요 (다시 들어도 크레딧 안 씀)" hidden></span>
                 <div class="vc_icon_btn vc_e_play fa-solid fa-play" title="이 줄만 듣기 (저장된 음성이 있으면 그걸 재생)"></div>
@@ -4963,7 +5100,7 @@ function editorRowHtml() {
                 <div class="vc_icon_btn vc_e_del fa-solid fa-trash-can" title="삭제"></div>
             </div>
         </div>
-        <textarea class="text_pole vc_e_text" rows="2" placeholder="대사"></textarea>
+        <textarea class="vc_field vc_e_text" rows="2" placeholder="대사"></textarea>
     </div>`;
 }
 
@@ -5041,9 +5178,9 @@ function buildEditor(messageId, script) {
     const s = getSettings();
     const tagsOn = s.useTags && modelInfo(s.model).tags;
     const $editor = $(`
-        <div class="vc_editor">
+        <div class="vc_editor vc_ui">
             <h3>📜 메시지 #${messageId} 대본</h3>
-            <div class="vc_editor_tools"><div class="menu_button menu_button_icon vc_del_scripts" title="이 메시지의 대본을 모든 음성 언어 · 이전 대본까지 한 번에 지워요. 만든 음성 파일은 남아요."><i class="fa-solid fa-trash-can"></i><span>이 메시지 대본 지우기</span></div></div>
+            <div class="vc_editor_tools"><div class="vc_btn vc_del_scripts" title="이 메시지의 대본을 모든 음성 언어 · 이전 대본까지 한 번에 지워요. 만든 음성 파일은 남아요."><i class="fa-solid fa-trash-can"></i><span>이 메시지 대본 지우기</span></div></div>
             <details class="vc_hint vc_editor_help">
                 <summary>고친 줄만 새로 만들고, 안 고친 줄은 저장된 음성을 다시 써요. ⓘ</summary>
                 화자·성별·목소리·태그·대사를 고칠 수 있어요.
@@ -5051,7 +5188,7 @@ function buildEditor(messageId, script) {
             </details>
             ${tagsOn ? '' : '<div class="vc_hint">⚠️ 지금 모델/설정에서는 태그가 꺼져 있어서 태그 없이 읽어요.</div>'}
             <div class="vc_edit_lines"></div>
-            <div class="menu_button menu_button_icon vc_add_line"><i class="fa-solid fa-plus"></i><span>줄 추가</span></div>
+            <div class="vc_btn vc_add_line"><i class="fa-solid fa-plus"></i><span>줄 추가</span></div>
         </div>`);
     const $lines = $editor.find('.vc_edit_lines');
     for (const line of script) $lines.append(makeEditorRow(line));
@@ -5196,9 +5333,9 @@ async function openScriptEditor(messageId) {
             const fmt = t => { try { return new Date(t).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
             const $bar = $(`<div class="vc_ver_bar">
                 <div class="vc_ver_nav">
-                    <div class="menu_button menu_button_icon vc_ver_prev" title="앞 대본"><i class="fa-solid fa-chevron-left"></i></div>
+                    <div class="vc_btn vc_ver_prev" title="앞 대본"><i class="fa-solid fa-chevron-left"></i></div>
                     <b class="vc_ver_label"></b>
-                    <div class="menu_button menu_button_icon vc_ver_next" title="다음 대본"><i class="fa-solid fa-chevron-right"></i></div>
+                    <div class="vc_btn vc_ver_next" title="다음 대본"><i class="fa-solid fa-chevron-right"></i></div>
                 </div>
                 <div class="vc_hint vc_ver_note"></div>
             </div>`);
@@ -5228,6 +5365,7 @@ async function openScriptEditor(messageId) {
             $editor.find('.vc_edit_lines').before($bar);
             show();
         }
+        themeProof($editor[0]);
         const popup = new ctx.Popup($editor, ctx.POPUP_TYPE.TEXT, '', {
             okButton: '저장하고 재생',
             cancelButton: '닫기',
@@ -5489,7 +5627,7 @@ function setInlineTags(on) {
 
 async function openQuickMenu() {
     const ctx = SillyTavern.getContext();
-    const $box = $('<div class="vc_quick_menu"></div>');
+    const $box = $('<div class="vc_quick_menu vc_ui"></div>');
     let popup = null;
     const rows = [
         { id: 'lang', icon: 'fa-language', label: () => `음성 언어: ${voiceLangLabel()}`, hint: '누를 때마다 화면대로 → 원문 → AI 번역', run: () => cycleVoiceLang() },
@@ -5497,7 +5635,7 @@ async function openQuickMenu() {
         { id: 'sfx', icon: 'fa-bell', label: () => `효과음: ${getSettings().sfxEnabled ? '켜짐' : '꺼짐'}`, hint: '', run: () => setSfx(!getSettings().sfxEnabled) },
         { id: 'settings', icon: 'fa-sliders', label: () => '설정 열기', hint: '', run: () => { popup?.completeCancelled?.(); setTimeout(() => openSettingsWindow(), 50); } },
         { id: 'saved', icon: 'fa-list', label: () => '이 채팅 대사 음성', hint: '', run: () => { popup?.completeCancelled?.(); setTimeout(openSavedList, 50); } },
-        { id: 'all', icon: 'fa-folder-open', label: () => '모든 봇 대사 음성 · ⭐ 즐겨찾기', hint: '봇·캐릭터별로 골라 보기', run: () => { popup?.completeCancelled?.(); setTimeout(() => openAllVoices(), 50); } },
+        { id: 'all', icon: 'fa-folder-open', label: () => '모든 깡통 대사 음성 · ⭐ 즐겨찾기', hint: '깡통·캐릭터별로 골라 보기', run: () => { popup?.completeCancelled?.(); setTimeout(() => openAllVoices(), 50); } },
         // buttons other extensions added (e.g. 📱 폰 열기) — they close this menu and run their own action
         ...[...quickActions.values()].map(a => ({
             id: `ext_${a.id}`, icon: a.icon, label: () => a.label, hint: a.hint,
@@ -5507,7 +5645,7 @@ async function openQuickMenu() {
     const render = () => {
         $box.empty();
         for (const r of rows) {
-            const $r = $(`<div class="vc_quick_row menu_button" data-id="${r.id}">
+            const $r = $(`<div class="vc_quick_row vc_btn" data-id="${r.id}">
                 <i class="fa-solid ${r.icon}"></i><span class="vc_quick_label"></span>${r.hint ? '<small class="vc_quick_hint"></small>' : ''}
             </div>`);
             $r.find('.vc_quick_label').text(r.label());
@@ -5517,6 +5655,7 @@ async function openQuickMenu() {
         }
     };
     render();
+    themeProof($box[0]);
     popup = new ctx.Popup($box, ctx.POPUP_TYPE.TEXT, '', { okButton: '닫기', leftAlign: true });
     await popup.show();
 }
@@ -5637,15 +5776,15 @@ function settingsHtml() {
                 <label for="voice_cast_unknown_voice">성별 모름 (비우면 남자 목소리)</label>
                 <select id="voice_cast_unknown_voice" class="vc_field"></select>
                 <div id="voice_cast_bot_cast_block">
-                    <div id="voice_cast_bot_cast_title" class="vc_section_title">🎭 이 봇 캐스트</div>
-                    <div class="vc_hint">이 봇 채팅방에서만 쓰는 목소리예요. 새 채팅을 열어도 그대로 유지돼요. 캐릭터와 페르소나 이름은 처음 한 번 자동으로 추가되고, 고치거나 지워도 다시 생기지 않아요.</div>
+                    <div id="voice_cast_bot_cast_title" class="vc_section_title">🎭 이 깡통 캐스트</div>
+                    <div class="vc_hint">이 깡통 채팅방에서만 쓰는 목소리예요. 새 채팅을 열어도 그대로 유지돼요. 캐릭터와 페르소나 이름은 처음 한 번 자동으로 추가되고, 고치거나 지워도 다시 생기지 않아요.</div>
                     <div id="voice_cast_bot_cast_list"></div>
                     <div class="vc_btn vc_cast_add" data-scope="bot"><i class="fa-solid fa-plus"></i><span>캐릭터 추가</span></div>
                 </div>
-                <div id="voice_cast_no_bot" class="vc_hint" style="display:none">채팅을 열면 그 봇 전용 캐스트가 여기 나와요.</div>
+                <div id="voice_cast_no_bot" class="vc_hint" style="display:none">채팅을 열면 그 깡통 전용 캐스트가 여기 나와요.</div>
 
-                <div class="vc_section_title">🌐 공통 캐스트 (모든 봇)</div>
-                <div class="vc_hint">어느 봇에서나 같은 목소리를 쓸 캐릭터예요 (예: 내 페르소나는 {{user}}). 이름이 겹치면 이 봇 캐스트가 우선이에요.</div>
+                <div class="vc_section_title">🌐 공통 캐스트 (모든 깡통)</div>
+                <div class="vc_hint">어느 깡통에서나 같은 목소리를 쓸 캐릭터예요 (예: 내 페르소나는 {{user}}). 이름이 겹치면 이 깡통 캐스트가 우선이에요.</div>
                 <div id="voice_cast_cast_list"></div>
                 <div class="vc_btn vc_cast_add" data-scope="global"><i class="fa-solid fa-plus"></i><span>캐릭터 추가</span></div>
                     </div>
@@ -5715,8 +5854,8 @@ function settingsHtml() {
                 </div>
                 <div id="voice_cast_mode_hint" class="vc_hint vc_sub vc_mode_hint"></div>
                 <div class="vc_mode_hidden" hidden>
-                <label class="vc_check"><input id="voice_cast_solo" type="checkbox" /><span id="voice_cast_solo_label">이 봇은 1인 모드</span></label>
-                <div class="vc_hint vc_sub">👤 AI 분류 없이 따옴표 대사를 전부 이 봇 목소리로 바로 읽어요 (내 메시지는 내 목소리). 기다림·비용 0. 감정 태그와 효과음은 빠지고, 조연 대사도 봇 목소리로 나와요. 봇마다 따로 기억해요.</div>
+                <label class="vc_check"><input id="voice_cast_solo" type="checkbox" /><span id="voice_cast_solo_label">이 깡통은 1인 모드</span></label>
+                <div class="vc_hint vc_sub">👤 AI 분류 없이 따옴표 대사를 전부 이 깡통 목소리로 바로 읽어요 (내 메시지는 내 목소리). 기다림·비용 0. 감정 태그와 효과음은 빠지고, 조연 대사도 깡통 목소리로 나와요. 깡통마다 따로 기억해요.</div>
                 <label class="vc_check"><input id="voice_cast_inline" type="checkbox" /><span>🚀 기다림 없이 바로 듣기</span></label>
                 <div class="vc_hint vc_sub">분류 대기 없이 바로 재생돼요. 대신 RP 모델이 태그를 같이 써서 답장마다 토큰이 조금 늘어요.</div>
                 <div class="vc_hint vc_sub">태그는 화면에 안 보이고 대본을 만든 뒤 지워져요. 모델이 빼먹은 대사만 빠른 분류로 메워요. 켠 뒤 새로 받는 답변부터 적용되고, 답변이 이상해지면 꺼주세요.</div>
@@ -5827,7 +5966,7 @@ function settingsHtml() {
                 <div class="vc_row">
                     <span id="voice_cast_cache_stats" class="vc_hint"></span>
                     <div id="voice_cast_saved_list" class="vc_btn"><i class="fa-solid fa-list"></i><span>이 채팅 음성 목록</span></div>
-                    <div id="voice_cast_all_list" class="vc_btn"><i class="fa-solid fa-folder-open"></i><span>모든 봇 음성 · ⭐</span></div>
+                    <div id="voice_cast_all_list" class="vc_btn"><i class="fa-solid fa-folder-open"></i><span>모든 깡통 음성 · ⭐</span></div>
                     <div id="voice_cast_cache_clear" class="vc_btn"><i class="fa-solid fa-broom"></i><span>전부 지우기</span></div>
                 </div>
                 <div class="vc_section_title">📜 대본 지우기</div>
@@ -5836,7 +5975,7 @@ function settingsHtml() {
                     <div id="voice_cast_clear_scripts" class="vc_btn"><i class="fa-solid fa-scroll"></i><span>이 채팅 대본 전부 지우기</span></div>
                 </div>
                 <div class="vc_section_title">📦 설정 옮기기</div>
-                <div class="vc_hint">캐스트(봇별·공통), 기본 목소리, 분류·연기 설정을 파일 하나로 저장하고 다른 기기에서 불러와요. API 키는 들어가지 않아요.</div>
+                <div class="vc_hint">캐스트(깡통별·공통), 기본 목소리, 분류·연기 설정을 파일 하나로 저장하고 다른 기기에서 불러와요. API 키는 들어가지 않아요.</div>
                 <div class="vc_row">
                     <div id="voice_cast_export" class="vc_btn"><i class="fa-solid fa-file-export"></i><span>내보내기</span></div>
                     <div id="voice_cast_import" class="vc_btn"><i class="fa-solid fa-file-import"></i><span>가져오기</span></div>
@@ -6238,6 +6377,18 @@ function markNativeColors(root) {
     for (const el of root.querySelectorAll('*')) el.setAttribute('data-bl-native-ext-colors', '');
 }
 
+/** Popup content gets the same treatment as the settings window: our palette (.vc_ui) + the theme opt-out mark on every node. */
+function themeProof(el) {
+    if (!el || el.nodeType !== 1) return;
+    el.classList.add('vc_ui');
+    markNativeColors(el);
+    try {
+        new MutationObserver((muts) => {
+            for (const m of muts) for (const n of m.addedNodes) markNativeColors(n);
+        }).observe(el, { childList: true, subtree: true });
+    } catch { /* ignore */ }
+}
+
 function bindSettingsWindow() {
     const overlay = document.getElementById('voice_cast_overlay');
     const panel = document.getElementById('voice_cast_settings');
@@ -6328,7 +6479,7 @@ const MODE_HINTS = {
     full: 'AI가 지문까지 다 읽고 분류해요. 제일 정확하지만 느려요.',
     fast: '대사만 뽑아서 누가·어떤 감정인지 빠르게 분류해요.',
     inline: 'RP 모델이 답변을 쓰면서 같이 표시해요. 기다림 0초 · 빠진 대사는 빠른 분류로 메워요.',
-    solo: '분류 없이 전부 이 봇 목소리로 바로 읽어요. 속마음 읽기를 켜면 *별표*도 속삭이듯 읽어요. 봇마다 따로 기억해요.',
+    solo: '분류 없이 전부 이 깡통 목소리로 바로 읽어요. 속마음 읽기를 켜면 *별표*도 속삭이듯 읽어요. 깡통마다 따로 기억해요.',
 };
 
 function classifyMode() {
@@ -6470,7 +6621,6 @@ function bindCastAdvHandlers($root) {
             const { list, i } = rowRef(this);
             if (!list?.[i]) return;
             list[i].color = String($(this).val());
-            $(this).removeClass('vc_color_unset');
             $(this).closest('.vc_cast_row').find('.vc_cast_adv_toggle').addClass('vc_custom');
             save();
         })

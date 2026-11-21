@@ -51,7 +51,7 @@
     margin-bottom: 4px;
 }
 
-.vc_edit_head .text_pole {
+.vc_edit_head .vc_field {
     margin: 0;
     width: auto;
     min-width: 0;
@@ -194,7 +194,7 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
     gap: 6px;
 }
 
-.vc_ver_nav .menu_button {
+.vc_ver_nav .vc_btn {
     flex: 0 0 auto;
     margin: 0;
     padding: 4px 10px;
@@ -244,11 +244,14 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
         margin: 4px 0;
     }
 
-    .vc_edit_head .text_pole,
+    .vc_editor {
+        --vc-tap: 30px;
+        --vc-pad: 3px 6px;
+    }
+
+    .vc_edit_head .vc_field,
     .vc_edit_row .vc_e_text {
         font-size: 0.9em;
-        padding: 3px 6px;
-        min-height: 0;
     }
 
     .vc_edit_head .vc_e_type { flex: 0 1 auto; }
@@ -306,7 +309,7 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
     margin: 8px 0;
 }
 
-.vc_saved_filters .text_pole {
+.vc_saved_filters .vc_field {
     margin: 0;
     flex: 1 1 140px;
     min-width: 0;
@@ -677,17 +680,6 @@ body.vc_hold_on #chat .mes_text {
     width: 100%;
     margin: 0;
 }
-.vc_cast_popup .vc_cast_color {
-    width: 36px;
-    height: 24px;
-    padding: 0;
-    border: none;
-    background: none;
-    cursor: pointer;
-}
-.vc_cast_popup .vc_cast_color.vc_color_unset {
-    opacity: 0.45;
-}
 .vc_cast_popup .vc_hint {
     opacity: 0.7;
     font-size: 0.85em;
@@ -716,14 +708,14 @@ body.vc_hold_on #chat .mes_text {
     margin: -4px 0 6px;
 }
 
-.vc_editor .vc_editor_tools .menu_button {
+.vc_editor .vc_editor_tools .vc_btn {
     margin: 0;
     padding: 3px 9px;
     font-size: 0.8em;
     opacity: 0.8;
 }
 
-.vc_editor .vc_editor_tools .menu_button:hover {
+.vc_editor .vc_editor_tools .vc_btn:hover {
     opacity: 1;
 }
 
@@ -762,7 +754,8 @@ body.vc_hold_on #chat .mes_text {
 }
 
 /* ---- palette ---- */
-#voice_cast_overlay {
+#voice_cast_overlay,
+.vc_ui {
     --vc-text: var(--SmartThemeBodyColor, #dcdcd2);
     --vc-bg: var(--SmartThemeBlurTintColor, #23262d);
     --vc-solid: var(--SmartThemeBlurTintColor, #23262d);
@@ -782,7 +775,8 @@ body.vc_hold_on #chat .mes_text {
 }
 
 @supports (color: rgb(from red r g b / 1)) {
-    #voice_cast_overlay {
+    #voice_cast_overlay,
+    .vc_ui {
         /* the theme's tint is often see-through; the window and the dropdown lists need a solid one */
         --vc-solid: rgb(from var(--SmartThemeBlurTintColor, #23262d) r g b / 1);
         --vc-bg: rgb(from var(--SmartThemeBlurTintColor, #23262d) r g b / max(alpha, 0.97));
@@ -790,7 +784,8 @@ body.vc_hold_on #chat .mes_text {
 }
 
 @supports (color: color-mix(in srgb, red 50%, blue)) {
-    #voice_cast_overlay {
+    #voice_cast_overlay,
+    .vc_ui {
         --vc-line: color-mix(in srgb, var(--vc-text) 18%, transparent);
         --vc-fill: color-mix(in srgb, var(--vc-text) 7%, transparent);
         --vc-fill-2: color-mix(in srgb, var(--vc-text) 13%, transparent);
@@ -801,7 +796,8 @@ body.vc_hold_on #chat .mes_text {
 }
 
 /* Blue Lemonade: follow its palette instead of fighting it */
-body.salty #voice_cast_overlay {
+body.salty #voice_cast_overlay,
+body.salty .vc_ui {
     --vc-text: var(--salty-text, var(--SmartThemeBodyColor, #dcdcd2));
     --vc-bg: var(--salty-surface, var(--salty-bg, var(--SmartThemeBlurTintColor, #23262d)));
     --vc-solid: var(--salty-surface, var(--salty-bg, var(--SmartThemeBlurTintColor, #23262d)));
@@ -1179,7 +1175,8 @@ body.salty #voice_cast_overlay {
 }
 
 /* ---- buttons ---- */
-#voice_cast_settings .vc_btn {
+#voice_cast_settings .vc_btn,
+:where(.vc_ui) .vc_btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1208,27 +1205,33 @@ body.salty #voice_cast_overlay {
 }
 
 #voice_cast_settings .vc_btn:hover,
-#voice_cast_settings .vc_btn:focus-visible {
+:where(.vc_ui) .vc_btn:hover,
+#voice_cast_settings .vc_btn:focus-visible,
+:where(.vc_ui) .vc_btn:focus-visible {
     background: var(--vc-fill-2);
     outline: none;
 }
 
-#voice_cast_settings .vc_btn:active {
+#voice_cast_settings .vc_btn:active,
+:where(.vc_ui) .vc_btn:active {
     background: var(--vc-accent-soft);
 }
 
-#voice_cast_settings .vc_btn > i {
+#voice_cast_settings .vc_btn > i,
+:where(.vc_ui) .vc_btn > i {
     flex: 0 0 auto;
     font-size: 0.95em;
     opacity: 0.85;
 }
 
-#voice_cast_settings .vc_cast_add {
+#voice_cast_settings .vc_cast_add,
+:where(.vc_ui) .vc_cast_add {
     margin-top: 6px;
 }
 
 /* ---- fields ---- */
-#voice_cast_settings .vc_field {
+#voice_cast_settings .vc_field,
+:where(.vc_ui) .vc_field {
     display: block;
     width: 100%;
     min-width: 0;
@@ -1247,28 +1250,34 @@ body.salty #voice_cast_overlay {
     outline: none;
 }
 
-#voice_cast_settings .vc_field:focus {
+#voice_cast_settings .vc_field:focus,
+:where(.vc_ui) .vc_field:focus {
     border-color: var(--vc-accent);
 }
 
-#voice_cast_settings select.vc_field {
+#voice_cast_settings select.vc_field,
+:where(.vc_ui) select.vc_field {
     padding-right: 6px;
     text-overflow: ellipsis;
     cursor: pointer;
 }
 
 #voice_cast_settings select.vc_field option,
-#voice_cast_settings select.vc_field optgroup {
+:where(.vc_ui) select.vc_field option,
+#voice_cast_settings select.vc_field optgroup,
+:where(.vc_ui) select.vc_field optgroup {
     background-color: var(--vc-solid);
     color: var(--vc-text);
 }
 
-#voice_cast_settings textarea.vc_field {
+#voice_cast_settings textarea.vc_field,
+:where(.vc_ui) textarea.vc_field {
     min-height: 4.2em;
     resize: vertical;
 }
 
-#voice_cast_settings input[type="range"] {
+#voice_cast_settings input[type="range"],
+:where(.vc_ui) input[type="range"] {
     display: block;
     width: 100%;
     margin: 4px 0 8px;
@@ -1276,7 +1285,8 @@ body.salty #voice_cast_overlay {
 }
 
 /* ---- plain checkbox rows ---- */
-#voice_cast_settings label.vc_check {
+#voice_cast_settings label.vc_check,
+:where(.vc_ui) label.vc_check {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -1287,18 +1297,21 @@ body.salty #voice_cast_overlay {
     line-height: 1.4;
 }
 
-#voice_cast_settings label.vc_check > span {
+#voice_cast_settings label.vc_check > span,
+:where(.vc_ui) label.vc_check > span {
     flex: 1 1 auto;
     min-width: 0;
 }
 
-#voice_cast_settings label.vc_check > input[type="checkbox"] {
+#voice_cast_settings label.vc_check > input[type="checkbox"],
+:where(.vc_ui) label.vc_check > input[type="checkbox"] {
     flex: 0 0 auto;
     margin: 0;
 }
 
 /* ---- switches: text on the left, toggle on the right ---- */
-#voice_cast_settings label.vc_sw {
+#voice_cast_settings label.vc_sw,
+:where(.vc_ui) label.vc_sw {
     flex-direction: row-reverse;
     justify-content: space-between;
 }
@@ -1310,12 +1323,13 @@ body.salty #voice_cast_overlay {
    (plain declarations in a layer lose to every unlayered rule). Never put display/width on .vc_field here:
    the code shows and hides fields with inline styles. */
 @layer multicast_tts {
-#voice_cast_settings .vc_field {
+#voice_cast_settings .vc_field,
+.vc_ui .vc_field {
     background-color: var(--vc-fill) !important;
     background-image: none !important;
     border: 1px solid var(--vc-line) !important;
     border-radius: 9px !important;
-    padding: 6px 10px !important;
+    padding: var(--vc-pad, 6px 10px) !important;
     margin: 0 !important;
     min-height: var(--vc-tap) !important;
     height: auto !important;
@@ -1326,31 +1340,37 @@ body.salty #voice_cast_overlay {
     filter: none !important;
 }
 
-#voice_cast_settings .vc_field:focus {
+#voice_cast_settings .vc_field:focus,
+.vc_ui .vc_field:focus {
     border-color: var(--vc-accent) !important;
 }
 
-#voice_cast_settings select.vc_field {
+#voice_cast_settings select.vc_field,
+.vc_ui select.vc_field {
     appearance: auto !important;
     -webkit-appearance: auto !important;
     padding-right: 6px !important;
 }
 
-#voice_cast_settings textarea.vc_field {
+#voice_cast_settings textarea.vc_field,
+.vc_ui textarea.vc_field {
     min-height: 4.2em !important;
 }
 
-#voice_cast_settings input[type="range"] {
+#voice_cast_settings input[type="range"],
+.vc_ui input[type="range"] {
     margin: 6px 0 10px !important;
 }
 
-#voice_cast_settings label.vc_check > input[type="checkbox"] {
+#voice_cast_settings label.vc_check > input[type="checkbox"],
+.vc_ui label.vc_check > input[type="checkbox"] {
     flex: 0 0 auto !important;
     margin: 0 !important;
 }
 
 
-#voice_cast_settings label.vc_sw > input[type="checkbox"] {
+#voice_cast_settings label.vc_sw > input[type="checkbox"],
+.vc_ui label.vc_sw > input[type="checkbox"] {
     appearance: none !important;
     -webkit-appearance: none !important;
     position: relative !important;
@@ -1378,12 +1398,14 @@ body.salty #voice_cast_overlay {
     transition: background-color 0.15s ease;
 }
 
-#voice_cast_settings label.vc_sw > input[type="checkbox"]::after {
+#voice_cast_settings label.vc_sw > input[type="checkbox"]::after,
+.vc_ui label.vc_sw > input[type="checkbox"]::after {
     content: none !important;
     display: none !important;
 }
 
-#voice_cast_settings label.vc_sw > input[type="checkbox"]::before {
+#voice_cast_settings label.vc_sw > input[type="checkbox"]::before,
+.vc_ui label.vc_sw > input[type="checkbox"]::before {
     content: "" !important;
     display: block !important;
     position: absolute !important;
@@ -1404,26 +1426,31 @@ body.salty #voice_cast_overlay {
     transition: left 0.15s ease;
 }
 
-#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked {
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked,
+.vc_ui label.vc_sw > input[type="checkbox"]:checked {
     background: var(--vc-accent) !important;
     border-color: transparent !important;
 }
 
-#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked::before {
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked::before,
+.vc_ui label.vc_sw > input[type="checkbox"]:checked::before {
     left: 20px !important;
 }
 
-#voice_cast_settings label.vc_sw > input[type="checkbox"]:focus-visible {
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:focus-visible,
+.vc_ui label.vc_sw > input[type="checkbox"]:focus-visible {
     box-shadow: 0 0 0 2px var(--vc-accent-soft) !important;
 }
 
-#voice_cast_settings label.vc_sw > input[type="checkbox"]:disabled {
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:disabled,
+.vc_ui label.vc_sw > input[type="checkbox"]:disabled {
     opacity: 0.4 !important;
     cursor: not-allowed !important;
 }
 }
 
-#voice_cast_settings label.vc_sw.vc_master > span {
+#voice_cast_settings label.vc_sw.vc_master > span,
+.vc_ui label.vc_sw.vc_master > span {
     font-weight: 700;
 }
 
@@ -1680,13 +1707,6 @@ body.salty #voice_cast_overlay {
         padding: 8px 12px;
     }
 
-    #voice_cast_settings .vc_panel_bar > .vc_hint {
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-    }
-
     #voice_cast_settings .vc_panel_main {
         flex-direction: column;
     }
@@ -1782,5 +1802,208 @@ body.salty #voice_cast_overlay {
 @media (prefers-reduced-motion: reduce) {
     #voice_cast_settings * {
         transition: none !important;
+    }
+}
+
+
+/* ===========================================================================
+   Popups (per-character settings, script editor, saved-voice lists, quick menu)
+   Their content root carries .vc_ui: same palette and the same theme-proof controls as the window.
+   =========================================================================== */
+.vc_ui,
+.vc_ui *,
+.vc_ui *::before,
+.vc_ui *::after {
+    box-sizing: border-box;
+}
+
+.vc_ui [hidden] {
+    display: none !important;
+}
+
+.vc_ui.vc_editor,
+.vc_ui.vc_saved {
+    --vc-tap: 32px;
+    --vc-pad: 4px 8px;
+}
+
+.vc_ui .vc_hint {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: keep-all;
+}
+
+.vc_saved_head .vc_switch_list,
+.vc_ver_nav .vc_btn,
+.vc_editor .vc_editor_tools .vc_btn,
+.vc_all_unknown .vc_btn {
+    min-height: 0;
+}
+
+.vc_all_unknown .vc_btn {
+    padding: 2px 8px;
+    font-size: 0.9em;
+    vertical-align: middle;
+}
+
+.vc_saved_filters .vc_saved_favonly {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 0;
+}
+
+.vc_quick_menu .vc_quick_row.vc_btn {
+    min-height: 44px;
+}
+
+/* ---- per-character settings ---- */
+.vc_cast_popup .vc_cast_adv {
+    gap: 8px;
+}
+
+.vc_cast_popup .vc_cast_adv > label {
+    margin: 6px 0 0;
+    font-size: 0.92em;
+}
+
+.vc_cast_popup .vc_row > .vc_field[style*="width:auto"] {
+    flex: 1 1 160px;
+}
+
+/* ---- 형광펜 색: swatches + colour wheel ---- */
+.vc_color {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid var(--vc-line);
+    border-radius: var(--vc-radius, 10px);
+}
+
+.vc_color_swatches {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.vc_color_sw {
+    aspect-ratio: 1;
+    min-width: 0;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+}
+
+.vc_color_sw:hover,
+.vc_color_sw:focus-visible {
+    transform: scale(1.12);
+    outline: none;
+}
+
+.vc_color_sw.vc_on {
+    border-color: var(--vc-text);
+    box-shadow: 0 0 0 2px var(--vc-solid), inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.vc_color_body {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.vc_color_wheel_wrap {
+    position: relative;
+    flex: 0 0 auto;
+    width: 150px;
+    height: 150px;
+}
+
+.vc_color_wheel {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    cursor: crosshair;
+    touch-action: none; /* dragging on the wheel must not scroll the popup */
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.vc_color_dot {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    margin: -9px 0 0 -9px;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 1px 4px rgba(0, 0, 0, 0.5);
+    pointer-events: none;
+}
+
+.vc_color.vc_color_unset .vc_color_dot {
+    opacity: 0.35;
+}
+
+.vc_color_side {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.vc_color_preview {
+    font-size: 1.05em;
+    line-height: 1.7;
+}
+
+.vc_color_sample {
+    padding: 2px 0;
+    background-color: rgba(255, 213, 79, 0.45); /* the default highlight */
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+}
+
+.vc_ui .vc_color_state {
+    margin: 0;
+    font-size: 0.82em;
+    opacity: 0.75;
+}
+
+.vc_ui .vc_color_hex {
+    width: 7.5em;
+    font-family: var(--monoFontFamily, monospace);
+}
+
+@media (max-width: 480px) {
+    .vc_color_swatches {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 8px;
+    }
+
+    .vc_color_body {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .vc_color_wheel_wrap {
+        align-self: center;
+        width: min(200px, 60vw);
+        height: min(200px, 60vw);
+    }
+
+    .vc_color_side {
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .vc_color_preview,
+    .vc_ui .vc_color_state {
+        flex: 1 1 100%;
     }
 }
