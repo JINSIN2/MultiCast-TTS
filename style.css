@@ -1,75 +1,4 @@
-#voice_cast_settings .vc_row {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    flex-wrap: wrap;
-    margin: 4px 0;
-}
 
-#voice_cast_settings .vc_row > label {
-    flex: 1 1 auto;
-}
-
-#voice_cast_settings .vc_section_title {
-    margin: 10px 0 4px;
-    font-weight: bold;
-    opacity: 0.9;
-}
-
-#voice_cast_settings .vc_hint {
-    font-size: 0.85em;
-    opacity: 0.7;
-    margin-bottom: 4px;
-}
-
-#voice_cast_settings select,
-#voice_cast_settings input[type="text"],
-#voice_cast_settings input[type="number"] {
-    min-width: 0;
-}
-
-#voice_cast_settings .vc_cast_row {
-    display: grid;
-    grid-template-columns: 1fr 64px 1fr auto;
-    gap: 4px;
-    align-items: center;
-    margin: 3px 0;
-}
-
-#voice_cast_settings .vc_cast_row .text_pole {
-    margin: 0;
-}
-
-#voice_cast_settings .vc_cast_btns {
-    display: flex;
-    gap: 6px;
-    padding: 0 2px;
-}
-
-#voice_cast_settings .vc_cast_btns > div {
-    cursor: pointer;
-    opacity: 0.7;
-}
-
-#voice_cast_settings .vc_cast_btns > div:hover {
-    opacity: 1;
-}
-
-#voice_cast_settings .vc_cast_btns .vc_custom {
-    opacity: 1;
-    color: var(--active, #e8a33d);
-}
-
-#voice_cast_settings .vc_cast_adv {
-    grid-column: 1 / -1;
-    padding: 4px 6px 8px;
-    margin-bottom: 4px;
-    border-left: 2px solid rgba(128, 128, 128, 0.35);
-}
-
-#voice_cast_settings .vc_cast_adv input[type="range"] {
-    width: 100%;
-}
 
 .vc_play_btn.vc_playing {
     color: var(--active, #e8a33d);
@@ -439,26 +368,6 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
     opacity: 0.8;
 }
 
-/* per-character highlight color picker */
-#voice_cast_settings .vc_cast_color {
-    width: 36px;
-    height: 24px;
-    padding: 0;
-    border: none;
-    background: none;
-    cursor: pointer;
-}
-
-#voice_cast_settings .vc_cast_color.vc_color_unset {
-    opacity: 0.45;
-}
-
-#voice_cast_settings .vc_cast_always,
-#voice_cast_settings .vc_cast_note {
-    width: 100%;
-    margin: 2px 0 4px;
-}
-
 /* ⏮ ⏭ inside the status pill */
 .vc_status .vc_skip {
     cursor: pointer;
@@ -468,18 +377,6 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 
 .vc_status .vc_skip:hover {
     opacity: 1;
-}
-
-/* BETA badge */
-#voice_cast_settings .vc_beta {
-    font-size: 0.7em;
-    font-weight: normal;
-    padding: 1px 6px;
-    margin-left: 4px;
-    border-radius: 999px;
-    border: 1px solid rgba(232, 163, 61, 0.6);
-    color: var(--active, #e8a33d);
-    vertical-align: middle;
 }
 
 /* ---- Bottom mini player: a drawer docked right above the input bar ---- */
@@ -682,58 +579,6 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
     box-shadow: inset 0 0 0 1.5px var(--vc-c);
 }
 
-/* ---- Settings groups ---- */
-#voice_cast_settings .vc_group {
-    margin: 6px 0;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
-    border-radius: 8px;
-}
-
-#voice_cast_settings .vc_group_title {
-    padding: 6px 10px;
-    cursor: pointer;
-    font-weight: bold;
-    list-style: none;
-    user-select: none;
-}
-
-#voice_cast_settings .vc_group_title::-webkit-details-marker {
-    display: none;
-}
-
-#voice_cast_settings .vc_group_title::before {
-    content: '▸';
-    display: inline-block;
-    width: 1em;
-    opacity: 0.6;
-    transition: transform 0.15s ease;
-}
-
-#voice_cast_settings .vc_group[open] > .vc_group_title::before {
-    transform: rotate(90deg);
-}
-
-#voice_cast_settings .vc_group_body {
-    padding: 0 10px 8px;
-}
-
-#voice_cast_settings .vc_conn_status {
-    font-size: 0.85em;
-    margin: 2px 0 6px;
-}
-
-#voice_cast_settings .vc_conn_status:empty {
-    display: none;
-}
-
-#voice_cast_settings .vc_conn_status[data-state="ok"] {
-    color: #6fcf86;
-}
-
-#voice_cast_settings .vc_conn_status[data-state="error"] {
-    color: #ef7a7a;
-}
-
 /* ---- Voice sample preview ---- */
 .vc_voice_prev {
     cursor: pointer;
@@ -747,113 +592,6 @@ body.vc_quick_on .extraMesButtons .vc_edit_btn {
 .vc_voice_prev.vc_previewing {
     opacity: 1;
     color: var(--active, #e8a33d);
-}
-
-#voice_cast_settings .vc_voice_pick {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
-#voice_cast_settings .vc_voice_pick > select {
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-/* 특정 캐릭터만 듣기 */
-#voice_cast_settings .vc_listen_list {
-    margin: 2px 0 8px 22px;
-    padding: 4px 8px;
-    border-left: 2px solid rgba(128, 128, 128, 0.35);
-}
-
-#voice_cast_settings .vc_listen_others {
-    opacity: 0.8;
-    font-size: 0.92em;
-}
-
-/* ---- tidy checkbox rows ---- */
-#voice_cast_settings .checkbox_label {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    margin: 8px 0 2px;
-    line-height: 1.4;
-}
-
-#voice_cast_settings .checkbox_label > input[type="checkbox"] {
-    flex: 0 0 auto;
-    margin: 2px 0 0;
-}
-
-#voice_cast_settings .vc_hint.vc_sub {
-    margin: 0 0 6px 28px;
-    font-size: 0.8em;
-}
-
-#voice_cast_settings .vc_listen_list .checkbox_label {
-    margin: 4px 0;
-}
-
-/* Cherry-pink headphones with a little leaf in the panel title. */
-#voice_cast_settings .vc_title_icon {
-    display: inline-block;
-    width: 1.2em;
-    height: 1.2em;
-    margin-right: 2px;
-    vertical-align: -0.22em;
-    overflow: visible;
-}
-
-#voice_cast_settings .vc_listening_setup {
-    margin: 12px 0;
-    padding: 10px;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 10px;
-}
-
-/* 내 효과음 */
-#voice_cast_settings .vc_custom_sfx {
-    margin: 10px 0;
-    padding: 8px 10px;
-    border: 1px solid var(--SmartThemeBorderColor);
-    border-radius: 8px;
-}
-#voice_cast_settings .vc_custom_sfx_head {
-    justify-content: space-between;
-    align-items: center;
-}
-#voice_cast_settings .vc_custom_sfx_list {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-top: 6px;
-}
-#voice_cast_settings .vc_custom_sfx_row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-}
-#voice_cast_settings .vc_custom_sfx_name {
-    flex: 0 1 30%;
-    min-width: 0;
-    margin: 0;
-}
-#voice_cast_settings .vc_custom_sfx_words {
-    flex: 1 1 auto;
-    min-width: 0;
-    margin: 0;
-}
-#voice_cast_settings .vc_custom_sfx_play,
-#voice_cast_settings .vc_custom_sfx_del {
-    flex: 0 0 auto;
-    cursor: pointer;
-    opacity: 0.8;
-}
-#voice_cast_settings .vc_custom_sfx_play:hover,
-#voice_cast_settings .vc_custom_sfx_del:hover {
-    opacity: 1;
 }
 
 /* 요술봉 빠른 메뉴 */
@@ -955,39 +693,6 @@ body.vc_hold_on #chat .mes_text {
     font-size: 0.85em;
 }
 
-/* 호흡 슬라이더 */
-#voice_cast_settings .vc_pause_preset {
-    padding: 2px 8px;
-    margin: 0;
-    font-size: 0.85em;
-}
-#voice_cast_settings .vc_pause_sliders {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    margin: 2px 0 4px;
-}
-#voice_cast_settings .vc_pause_sliders input[type="range"] {
-    width: 100%;
-}
-
-/* 접힌 설명 ⓘ */
-#voice_cast_settings .vc_info {
-    font-size: 0.8em;
-    opacity: 0.45;
-    cursor: pointer;
-    margin-left: 4px;
-    vertical-align: middle;
-}
-#voice_cast_settings .vc_info:hover,
-#voice_cast_settings .vc_info.vc_on {
-    opacity: 1;
-    color: var(--active, #e8a33d);
-}
-#voice_cast_settings .vc_info_row {
-    margin: 0 0 2px;
-}
-
 .vc_saved_head .vc_switch_list {
     float: right;
     padding: 2px 8px;
@@ -1002,234 +707,6 @@ body.vc_hold_on #chat .mes_text {
 }
 .vc_edit_row .vc_e_fav.vc_disabled {
     opacity: 0.25;
-}
-
-/* ---- Settings panel tidy-up (3.0.9 / 3.1.13) ---- */
-#voice_cast_settings .vc_top {
-    display: flex;
-    align-items: center;
-    margin: 2px 0 8px;
-}
-
-#voice_cast_settings .vc_quick_grid > .vc_row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    margin: 0 0 4px;
-}
-
-#voice_cast_settings .vc_quick_grid .menu_button {
-    box-sizing: border-box;
-    margin: 0;
-    width: 100%;
-    min-width: 0;
-    justify-content: center;
-    text-align: center;
-    white-space: normal;
-    line-height: 1.25;
-    padding: 6px 4px;
-    font-size: 0.9em;
-}
-
-#voice_cast_settings .vc_listen_mode {
-    margin: 10px 0 8px;
-}
-
-#voice_cast_settings .vc_hidden_select {
-    display: none;
-}
-
-#voice_cast_settings .vc_lbl {
-    font-size: 0.85em;
-    opacity: 0.75;
-    margin: 6px 2px 3px;
-}
-
-/* segmented buttons (one choice) */
-#voice_cast_settings .vc_seg {
-    display: flex;
-    gap: 3px;
-    padding: 3px;
-    border-radius: 9px;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
-    background: rgba(128, 128, 128, 0.08);
-}
-
-#voice_cast_settings .vc_seg_btn {
-    flex: 1 1 0;
-    min-width: 0;
-    text-align: center;
-    padding: 5px 2px;
-    border-radius: 7px;
-    cursor: pointer;
-    font-size: 0.9em;
-    opacity: 0.7;
-    user-select: none;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-#voice_cast_settings .vc_seg_btn:hover {
-    opacity: 1;
-}
-
-#voice_cast_settings .vc_seg_btn.vc_on {
-    opacity: 1;
-    font-weight: bold;
-    background: var(--SmartThemeQuoteColor, rgba(232, 163, 61, 0.35));
-    color: var(--SmartThemeBodyColor, inherit);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
-#voice_cast_settings .vc_seg_btn.vc_dim {
-    opacity: 0.35;
-}
-
-#voice_cast_settings .vc_mode_hint {
-    margin: 4px 2px 6px;
-}
-
-/* group headers: name left, status badge right */
-#voice_cast_settings .vc_group_title {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 8px 10px;
-}
-
-#voice_cast_settings .vc_group_name {
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-#voice_cast_settings .vc_badge {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 60%;
-    font-size: 0.75em;
-    font-weight: normal;
-    padding: 1px 8px;
-    border-radius: 999px;
-    background: rgba(128, 128, 128, 0.15);
-    opacity: 0.85;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-#voice_cast_settings .vc_badge.vc_warn {
-    background: rgba(232, 163, 61, 0.22);
-    color: var(--active, #e8a33d);
-    opacity: 1;
-}
-
-/* switches: the label text on the left, a small toggle on the right.
-   !important on the toggle itself: some themes restyle every checkbox (round, fixed size) and would turn it into a circle */
-#voice_cast_settings label.vc_sw {
-    display: flex;
-    flex-direction: row-reverse;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-    margin: 6px 0 2px;
-}
-
-#voice_cast_settings label.vc_sw > span {
-    flex: 1 1 auto;
-    min-width: 0;
-}
-
-#voice_cast_settings label.vc_sw > input[type="checkbox"] {
-    appearance: none !important;
-    -webkit-appearance: none !important;
-    position: relative !important;
-    flex: 0 0 auto !important;
-    box-sizing: border-box !important;
-    width: 2.4em !important;
-    min-width: 2.4em !important;
-    max-width: 2.4em !important;
-    height: 1.35em !important;
-    min-height: 1.35em !important;
-    max-height: 1.35em !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    border-radius: 999px !important;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.5)) !important;
-    outline: none !important;
-    background: rgba(128, 128, 128, 0.35) !important;
-    background-image: none !important;
-    box-shadow: none !important;
-    filter: none !important;
-    transform: none !important;
-    cursor: pointer;
-    display: inline-block !important;
-    overflow: hidden !important;
-    transition: background-color 0.15s ease;
-}
-
-#voice_cast_settings label.vc_sw > input[type="checkbox"]::after {
-    content: none !important;
-    display: none !important;
-}
-
-#voice_cast_settings label.vc_sw > input[type="checkbox"]::before {
-    content: "" !important;
-    display: block !important;
-    position: absolute !important;
-    top: 50% !important;
-    left: 0.15em !important;
-    width: 0.95em !important;
-    height: 0.95em !important;
-    margin: 0 !important;
-    border: 0 !important;
-    border-radius: 50% !important;
-    background: #fff !important;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35) !important;
-    clip-path: none !important;
-    -webkit-mask: none !important;
-    mask: none !important;
-    opacity: 1 !important;
-    transform: translateY(-50%) !important;
-    transition: left 0.15s ease;
-}
-
-#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked {
-    background: #f52d56 !important; /* cherry, same red as the MultiCast icon */
-    border-color: transparent !important;
-}
-
-#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked::before {
-    left: calc(100% - 1.1em) !important;
-}
-
-#voice_cast_settings label.vc_sw > input[type="checkbox"]:disabled {
-    opacity: 0.4 !important;
-    cursor: not-allowed;
-}
-
-#voice_cast_settings label.vc_sw.vc_master > span {
-    font-weight: bold;
-}
-
-#voice_cast_settings .vc_group[data-group="play"] input[type="range"] {
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    margin: 2px 0 6px;
-}
-
-#voice_cast_settings .vc_pause_row > label {
-    flex: 1 1 100%;
-}
-
-#voice_cast_settings .vc_pause_row > .vc_pause_preset {
-    flex: 1 1 0;
-    min-width: 0;
-    margin: 0;
-    justify-content: center;
-    text-align: center;
-    box-sizing: border-box;
 }
 
 /* 📜 editor: small tool row under the title */
@@ -1248,4 +725,1062 @@ body.vc_hold_on #chat .mes_text {
 
 .vc_editor .vc_editor_tools .menu_button:hover {
     opacity: 1;
+}
+
+/* ===========================================================================
+   Settings window (3.2.0)
+   The Extensions drawer only keeps on/off, stop and "설정 열기"; everything else lives in
+   #voice_cast_overlay > #voice_cast_settings, appended to <body>.
+   Controls use the extension's own classes (.vc_btn / .vc_field / .vc_check) instead of
+   SillyTavern's stock ones, and colours come from the --vc-* palette below, so a heavy theme
+   that restyles every .menu_button / .text_pole does not reach in here.
+   =========================================================================== */
+
+#voice_cast_drawer .vc_drawer_btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0 2px;
+}
+
+#voice_cast_drawer .vc_drawer_btns > .menu_button {
+    flex: 1 1 0;
+    min-width: 0;
+    margin: 0;
+    justify-content: center;
+    white-space: nowrap;
+}
+
+.vc_title_icon {
+    display: inline-block;
+    width: 1.2em;
+    height: 1.2em;
+    margin-right: 2px;
+    vertical-align: -0.22em;
+    overflow: visible;
+    flex: 0 0 auto;
+}
+
+/* ---- palette ---- */
+#voice_cast_overlay {
+    --vc-text: var(--SmartThemeBodyColor, #dcdcd2);
+    --vc-bg: var(--SmartThemeBlurTintColor, #23262d);
+    --vc-solid: var(--SmartThemeBlurTintColor, #23262d);
+    --vc-line: var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.35));
+    --vc-muted: var(--SmartThemeBodyColor, #dcdcd2);
+    --vc-muted-alpha: 0.68;
+    --vc-fill: rgba(128, 128, 128, 0.12);
+    --vc-fill-2: rgba(128, 128, 128, 0.22);
+    --vc-accent: #f52d56; /* cherry, same red as the MultiCast icon */
+    --vc-on-accent: #fff;
+    --vc-accent-soft: rgba(245, 45, 86, 0.16);
+    --vc-warn: #e8a33d;
+    --vc-ok: #6fcf86;
+    --vc-bad: #ef7a7a;
+    --vc-radius: 10px;
+    --vc-tap: 36px;
+}
+
+@supports (color: rgb(from red r g b / 1)) {
+    #voice_cast_overlay {
+        /* the theme's tint is often see-through; the window and the dropdown lists need a solid one */
+        --vc-solid: rgb(from var(--SmartThemeBlurTintColor, #23262d) r g b / 1);
+        --vc-bg: rgb(from var(--SmartThemeBlurTintColor, #23262d) r g b / max(alpha, 0.97));
+    }
+}
+
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+    #voice_cast_overlay {
+        --vc-line: color-mix(in srgb, var(--vc-text) 18%, transparent);
+        --vc-fill: color-mix(in srgb, var(--vc-text) 7%, transparent);
+        --vc-fill-2: color-mix(in srgb, var(--vc-text) 13%, transparent);
+        --vc-muted: color-mix(in srgb, var(--vc-text) 68%, transparent);
+        --vc-muted-alpha: 1;
+        --vc-accent-soft: color-mix(in srgb, var(--vc-accent) 16%, transparent);
+    }
+}
+
+/* Blue Lemonade: follow its palette instead of fighting it */
+body.salty #voice_cast_overlay {
+    --vc-text: var(--salty-text, var(--SmartThemeBodyColor, #dcdcd2));
+    --vc-bg: var(--salty-surface, var(--salty-bg, var(--SmartThemeBlurTintColor, #23262d)));
+    --vc-solid: var(--salty-surface, var(--salty-bg, var(--SmartThemeBlurTintColor, #23262d)));
+    --vc-line: var(--salty-line, rgba(128, 128, 128, 0.35));
+    --vc-muted: var(--salty-muted, var(--vc-text));
+    --vc-muted-alpha: 1;
+    --vc-accent: var(--salty-accent, #f52d56);
+    --vc-on-accent: var(--salty-on-accent, #fff);
+}
+
+/* ---- overlay + window ----
+   SillyTavern puts a transform on <html> and makes <body> fixed on phones, so <html> is 0px tall there:
+   size the overlay in viewport units from the top-left corner, never with inset/bottom/percent. */
+#voice_cast_overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    z-index: 9990;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    background: rgba(0, 0, 0, 0.55);
+}
+
+#voice_cast_overlay[hidden] {
+    display: none !important;
+}
+
+#voice_cast_settings,
+#voice_cast_settings *,
+#voice_cast_settings *::before,
+#voice_cast_settings *::after {
+    box-sizing: border-box;
+}
+
+#voice_cast_settings [hidden] {
+    display: none !important;
+}
+
+#voice_cast_settings.vc_panel {
+    display: flex;
+    flex-direction: column;
+    width: min(940px, calc(100vw - 32px));
+    height: min(780px, calc(100vh - 32px));
+    height: min(780px, calc(100dvh - 32px));
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--vc-line);
+    border-radius: 14px;
+    background: var(--vc-bg);
+    color: var(--vc-text);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+    text-align: left;
+    line-height: 1.45;
+    outline: none;
+    -webkit-backdrop-filter: blur(calc(var(--SmartThemeBlurStrength, 10px)));
+    backdrop-filter: blur(calc(var(--SmartThemeBlurStrength, 10px)));
+}
+
+/* ---- header ---- */
+#voice_cast_settings .vc_panel_head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 10px 10px 16px;
+    border-bottom: 1px solid var(--vc-line);
+}
+
+#voice_cast_settings .vc_panel_title {
+    flex: 0 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 1.08em;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+#voice_cast_settings .vc_panel_title > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#voice_cast_settings .vc_head_badge {
+    flex: 0 1 auto;
+    margin-right: auto;
+}
+
+#voice_cast_settings .vc_panel_head label.vc_sw {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 0;
+    margin: 0 0 0 auto;
+    padding: 0;
+    gap: 8px;
+}
+
+#voice_cast_settings .vc_panel_head label.vc_sw > span {
+    flex: 0 0 auto;
+    font-size: 0.9em;
+}
+
+#voice_cast_settings .vc_panel_close {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    font-size: 1.15em;
+    cursor: pointer;
+    opacity: 0.75;
+}
+
+#voice_cast_settings .vc_panel_close:hover,
+#voice_cast_settings .vc_panel_close:focus-visible {
+    opacity: 1;
+    background: var(--vc-fill-2);
+}
+
+/* ---- always-visible bar: how to listen + stop buttons ---- */
+#voice_cast_settings .vc_panel_bar {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 6px 12px;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--vc-line);
+}
+
+#voice_cast_settings .vc_panel_bar > .vc_hint {
+    grid-column: 1 / -1;
+    margin: 0;
+}
+
+#voice_cast_settings .vc_panel_bar > .vc_hint:empty {
+    display: none;
+}
+
+#voice_cast_settings .vc_listen_mode {
+    margin: 0;
+    min-width: 0;
+}
+
+#voice_cast_settings .vc_quick_grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    min-width: 0;
+}
+
+#voice_cast_settings .vc_quick_grid > .vc_btn {
+    width: 100%;
+    min-width: 0;
+    padding-left: 6px;
+    padding-right: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+#voice_cast_settings .vc_quick_grid > .vc_btn > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ---- tabs + pages ---- */
+#voice_cast_settings .vc_panel_main {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+}
+
+#voice_cast_settings .vc_tabs {
+    flex: 0 0 216px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 8px;
+    overflow-y: auto;
+    border-right: 1px solid var(--vc-line);
+    overscroll-behavior: contain;
+}
+
+#voice_cast_settings .vc_tab {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 8px 10px;
+    border-radius: 9px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    color: var(--vc-text);
+}
+
+#voice_cast_settings .vc_tab:hover,
+#voice_cast_settings .vc_tab:focus-visible {
+    background: var(--vc-fill);
+    outline: none;
+}
+
+#voice_cast_settings .vc_tab.vc_on {
+    background: var(--vc-accent-soft);
+    box-shadow: inset 3px 0 0 var(--vc-accent);
+}
+
+#voice_cast_settings .vc_tab_name {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* in the tab list the little status reads as a second line, not a pill */
+#voice_cast_settings .vc_tab > .vc_badge {
+    max-width: 100%;
+    padding: 0;
+    border-radius: 0;
+    background: none;
+    font-size: 0.78em;
+    color: var(--vc-muted);
+    opacity: var(--vc-muted-alpha);
+}
+
+#voice_cast_settings .vc_tab > .vc_badge.vc_warn {
+    background: none;
+    color: var(--vc-warn);
+    opacity: 1;
+}
+
+#voice_cast_settings .vc_pages {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 16px 20px 28px;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+#voice_cast_settings .vc_page {
+    max-width: 640px;
+}
+
+#voice_cast_settings .vc_page_title {
+    margin: 0 0 12px;
+    font-size: 1.15em;
+    font-weight: 700;
+}
+
+#voice_cast_settings .vc_group_body {
+    padding: 0;
+}
+
+/* ---- text ---- */
+#voice_cast_settings label,
+#voice_cast_settings .vc_hint,
+#voice_cast_settings .vc_section_title,
+#voice_cast_settings .vc_page_title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: keep-all;
+}
+
+#voice_cast_settings label {
+    display: block;
+    margin: 12px 0 4px;
+    font-size: 0.92em;
+    color: var(--vc-text);
+    cursor: default;
+}
+
+#voice_cast_settings label[for],
+#voice_cast_settings label.vc_check {
+    cursor: pointer;
+}
+
+#voice_cast_settings .vc_lbl {
+    margin: 12px 0 4px;
+    font-size: 0.92em;
+}
+
+#voice_cast_settings .vc_section_title {
+    margin: 22px 0 8px;
+    padding-top: 16px;
+    border-top: 1px solid var(--vc-line);
+    font-weight: 700;
+}
+
+#voice_cast_settings .vc_group_body > .vc_section_title:first-child,
+#voice_cast_settings #voice_cast_bot_cast_block > .vc_section_title {
+    margin-top: 22px;
+}
+
+#voice_cast_settings .vc_group_body > .vc_section_title:first-child {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+}
+
+#voice_cast_settings .vc_hint {
+    margin: 4px 0 8px;
+    font-size: 0.85em;
+    line-height: 1.5;
+    color: var(--vc-muted);
+    opacity: var(--vc-muted-alpha);
+}
+
+#voice_cast_settings .vc_hint.vc_sub {
+    margin: 0 0 8px;
+}
+
+#voice_cast_settings .vc_hint b {
+    color: var(--vc-text);
+}
+
+#voice_cast_settings .vc_info {
+    margin-left: 6px;
+    padding: 4px;
+    font-size: 0.85em;
+    opacity: 0.5;
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+#voice_cast_settings .vc_info:hover,
+#voice_cast_settings .vc_info.vc_on {
+    opacity: 1;
+    color: var(--vc-warn);
+}
+
+#voice_cast_settings .vc_info_row {
+    margin: 0 0 2px;
+}
+
+#voice_cast_settings .vc_info_row > .vc_hint {
+    display: inline;
+}
+
+#voice_cast_settings .vc_beta {
+    font-size: 0.7em;
+    font-weight: normal;
+    padding: 1px 6px;
+    margin-left: 4px;
+    border-radius: 999px;
+    border: 1px solid var(--vc-warn);
+    color: var(--vc-warn);
+    vertical-align: middle;
+}
+
+/* ---- rows ---- */
+#voice_cast_settings .vc_row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+#voice_cast_settings .vc_row > label {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+}
+
+/* ---- buttons ---- */
+#voice_cast_settings .vc_btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: auto;
+    min-height: var(--vc-tap);
+    margin: 0;
+    padding: 6px 12px;
+    border: 1px solid var(--vc-line);
+    border-radius: 9px;
+    background: var(--vc-fill);
+    color: var(--vc-text);
+    font: inherit;
+    font-size: 0.92em;
+    line-height: 1.25;
+    text-align: center;
+    text-decoration: none;
+    white-space: normal;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    box-shadow: none;
+    filter: none;
+    opacity: 1;
+    transition: background-color 0.12s ease;
+}
+
+#voice_cast_settings .vc_btn:hover,
+#voice_cast_settings .vc_btn:focus-visible {
+    background: var(--vc-fill-2);
+    outline: none;
+}
+
+#voice_cast_settings .vc_btn:active {
+    background: var(--vc-accent-soft);
+}
+
+#voice_cast_settings .vc_btn > i {
+    flex: 0 0 auto;
+    font-size: 0.95em;
+    opacity: 0.85;
+}
+
+#voice_cast_settings .vc_cast_add {
+    margin-top: 6px;
+}
+
+/* ---- fields ---- */
+#voice_cast_settings .vc_field {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: var(--vc-tap);
+    margin: 0;
+    padding: 6px 10px;
+    border: 1px solid var(--vc-line);
+    border-radius: 9px;
+    background-color: var(--vc-fill);
+    color: var(--vc-text);
+    font: inherit;
+    font-size: 0.95em;
+    line-height: 1.3;
+    box-shadow: none;
+    outline: none;
+}
+
+#voice_cast_settings .vc_field:focus {
+    border-color: var(--vc-accent);
+}
+
+#voice_cast_settings select.vc_field {
+    padding-right: 6px;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+#voice_cast_settings select.vc_field option,
+#voice_cast_settings select.vc_field optgroup {
+    background-color: var(--vc-solid);
+    color: var(--vc-text);
+}
+
+#voice_cast_settings textarea.vc_field {
+    min-height: 4.2em;
+    resize: vertical;
+}
+
+#voice_cast_settings input[type="range"] {
+    display: block;
+    width: 100%;
+    margin: 4px 0 8px;
+    accent-color: var(--vc-accent);
+}
+
+/* ---- plain checkbox rows ---- */
+#voice_cast_settings label.vc_check {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 4px 0;
+    min-height: var(--vc-tap);
+    font-size: 1em;
+    line-height: 1.4;
+}
+
+#voice_cast_settings label.vc_check > span {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#voice_cast_settings label.vc_check > input[type="checkbox"] {
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+/* ---- switches: text on the left, toggle on the right ---- */
+#voice_cast_settings label.vc_sw {
+    flex-direction: row-reverse;
+    justify-content: space-between;
+}
+
+/* ---- theme-proof controls ----
+   A theme like Blue Lemonade restyles every checkbox / select / text field with !important and very long
+   selectors. Inside a cascade layer, !important wins over any unlayered !important no matter how specific,
+   so the few declarations that must survive live here. Everything in this block has to be !important
+   (plain declarations in a layer lose to every unlayered rule). Never put display/width on .vc_field here:
+   the code shows and hides fields with inline styles. */
+@layer multicast_tts {
+#voice_cast_settings .vc_field {
+    background-color: var(--vc-fill) !important;
+    background-image: none !important;
+    border: 1px solid var(--vc-line) !important;
+    border-radius: 9px !important;
+    padding: 6px 10px !important;
+    margin: 0 !important;
+    min-height: var(--vc-tap) !important;
+    height: auto !important;
+    color: var(--vc-text) !important;
+    line-height: 1.3 !important;
+    box-shadow: none !important;
+    outline: none !important;
+    filter: none !important;
+}
+
+#voice_cast_settings .vc_field:focus {
+    border-color: var(--vc-accent) !important;
+}
+
+#voice_cast_settings select.vc_field {
+    appearance: auto !important;
+    -webkit-appearance: auto !important;
+    padding-right: 6px !important;
+}
+
+#voice_cast_settings textarea.vc_field {
+    min-height: 4.2em !important;
+}
+
+#voice_cast_settings input[type="range"] {
+    margin: 6px 0 10px !important;
+}
+
+#voice_cast_settings label.vc_check > input[type="checkbox"] {
+    flex: 0 0 auto !important;
+    margin: 0 !important;
+}
+
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"] {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    position: relative !important;
+    flex: 0 0 auto !important;
+    box-sizing: border-box !important;
+    width: 42px !important;
+    min-width: 42px !important;
+    max-width: 42px !important;
+    height: 24px !important;
+    min-height: 24px !important;
+    max-height: 24px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 999px !important;
+    border: 1px solid var(--vc-line) !important;
+    outline: none !important;
+    background: var(--vc-fill-2) !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+    transform: none !important;
+    cursor: pointer !important;
+    display: inline-block !important;
+    overflow: hidden !important;
+    transition: background-color 0.15s ease;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]::after {
+    content: none !important;
+    display: none !important;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]::before {
+    content: "" !important;
+    display: block !important;
+    position: absolute !important;
+    top: 50% !important;
+    left: 2px !important;
+    width: 18px !important;
+    height: 18px !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 50% !important;
+    background: #fff !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35) !important;
+    clip-path: none !important;
+    -webkit-mask: none !important;
+    mask: none !important;
+    opacity: 1 !important;
+    transform: translateY(-50%) !important;
+    transition: left 0.15s ease;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked {
+    background: var(--vc-accent) !important;
+    border-color: transparent !important;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:checked::before {
+    left: 20px !important;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:focus-visible {
+    box-shadow: 0 0 0 2px var(--vc-accent-soft) !important;
+}
+
+#voice_cast_settings label.vc_sw > input[type="checkbox"]:disabled {
+    opacity: 0.4 !important;
+    cursor: not-allowed !important;
+}
+}
+
+#voice_cast_settings label.vc_sw.vc_master > span {
+    font-weight: 700;
+}
+
+/* ---- segmented buttons ---- */
+#voice_cast_settings .vc_hidden_select {
+    display: none;
+}
+
+#voice_cast_settings .vc_seg {
+    display: flex;
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid var(--vc-line);
+    border-radius: 11px;
+    background: var(--vc-fill);
+}
+
+#voice_cast_settings .vc_seg_btn {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(var(--vc-tap) - 6px);
+    padding: 4px 4px;
+    border-radius: 8px;
+    font-size: 0.9em;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    color: var(--vc-text);
+    opacity: 0.75;
+}
+
+#voice_cast_settings .vc_seg_btn:hover {
+    opacity: 1;
+}
+
+#voice_cast_settings .vc_seg_btn.vc_on {
+    opacity: 1;
+    font-weight: 700;
+    background: var(--vc-accent);
+    color: var(--vc-on-accent);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+#voice_cast_settings .vc_seg_btn.vc_dim {
+    opacity: 0.35;
+}
+
+#voice_cast_settings .vc_mode_hint {
+    margin: 6px 2px 8px;
+}
+
+/* ---- status pills ---- */
+#voice_cast_settings .vc_badge {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 60%;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: var(--vc-fill-2);
+    font-size: 0.75em;
+    font-weight: normal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#voice_cast_settings .vc_badge.vc_warn {
+    background: rgba(232, 163, 61, 0.22);
+    color: var(--vc-warn);
+}
+
+#voice_cast_settings .vc_conn_status {
+    margin: 2px 0 6px;
+    font-size: 0.85em;
+}
+
+#voice_cast_settings .vc_conn_status:empty {
+    display: none;
+}
+
+#voice_cast_settings .vc_conn_status[data-state="ok"] {
+    color: var(--vc-ok);
+}
+
+#voice_cast_settings .vc_conn_status[data-state="error"] {
+    color: var(--vc-bad);
+}
+
+/* ---- cast ---- */
+#voice_cast_settings .vc_voice_pick {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+}
+
+#voice_cast_settings .vc_voice_pick > select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#voice_cast_settings .vc_voice_prev {
+    flex: 0 0 auto;
+    padding: 6px;
+    font-size: 1.25em;
+}
+
+#voice_cast_settings .vc_cast_row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) 74px minmax(0, 1fr) auto;
+    gap: 6px;
+    align-items: center;
+    margin: 6px 0;
+}
+
+#voice_cast_settings .vc_cast_btns {
+    display: flex;
+    gap: 2px;
+}
+
+#voice_cast_settings .vc_cast_btns > div {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: var(--vc-tap);
+    border-radius: 8px;
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+#voice_cast_settings .vc_cast_btns > div:hover {
+    opacity: 1;
+    background: var(--vc-fill-2);
+}
+
+#voice_cast_settings .vc_cast_btns .vc_custom {
+    opacity: 1;
+    color: var(--vc-warn);
+}
+
+/* ---- only-these-characters list ---- */
+#voice_cast_settings .vc_listen_list {
+    margin: 2px 0 10px;
+    padding: 4px 12px;
+    border-left: 2px solid var(--vc-line);
+}
+
+#voice_cast_settings .vc_listen_others {
+    opacity: 0.8;
+}
+
+/* ---- pauses ---- */
+#voice_cast_settings .vc_pause_row > label {
+    flex: 1 1 100%;
+}
+
+#voice_cast_settings .vc_pause_row > .vc_pause_preset {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+#voice_cast_settings .vc_pause_sliders {
+    display: flex;
+    flex-direction: column;
+    margin: 4px 0;
+}
+
+#voice_cast_settings .vc_pause_sliders > label {
+    margin-top: 8px;
+}
+
+/* ---- my sound files ---- */
+#voice_cast_settings .vc_custom_sfx {
+    margin: 14px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--vc-line);
+    border-radius: var(--vc-radius);
+}
+
+#voice_cast_settings .vc_custom_sfx_head {
+    justify-content: space-between;
+    margin-top: 0;
+}
+
+#voice_cast_settings .vc_custom_sfx_list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+#voice_cast_settings .vc_custom_sfx_row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+#voice_cast_settings .vc_custom_sfx_name {
+    flex: 0 1 30%;
+}
+
+#voice_cast_settings .vc_custom_sfx_words {
+    flex: 1 1 auto;
+}
+
+#voice_cast_settings .vc_custom_sfx_row > .vc_icon_btn {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 30px;
+    height: var(--vc-tap);
+    cursor: pointer;
+}
+
+/* ---- phone: full screen, tabs become one sideways-scrolling row ---- */
+@media (max-width: 720px) {
+    #voice_cast_overlay {
+        --vc-tap: 42px;
+        align-items: flex-start;
+        justify-content: flex-start;
+    }
+
+    #voice_cast_settings.vc_panel {
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        border: 0;
+        border-radius: 0;
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    #voice_cast_settings .vc_panel_head {
+        padding: 6px 6px 6px 12px;
+        gap: 8px;
+    }
+
+    #voice_cast_settings .vc_head_badge {
+        display: none !important;
+    }
+
+    #voice_cast_settings .vc_panel_bar {
+        grid-template-columns: minmax(0, 1fr);
+        padding: 8px 12px;
+    }
+
+    #voice_cast_settings .vc_panel_bar > .vc_hint {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+
+    #voice_cast_settings .vc_panel_main {
+        flex-direction: column;
+    }
+
+    #voice_cast_settings .vc_tabs {
+        flex: 0 0 auto;
+        flex-direction: row;
+        gap: 4px;
+        padding: 6px 8px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        border-right: 0;
+        border-bottom: 1px solid var(--vc-line);
+        scrollbar-width: none;
+    }
+
+    #voice_cast_settings .vc_tabs::-webkit-scrollbar {
+        display: none;
+    }
+
+    #voice_cast_settings .vc_tab {
+        flex: 0 0 auto;
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
+        min-height: 38px;
+        padding: 6px 12px;
+        border-radius: 999px;
+    }
+
+    #voice_cast_settings .vc_tab.vc_on {
+        box-shadow: inset 0 0 0 1.5px var(--vc-accent);
+    }
+
+    /* only a warning is worth the room up here */
+    #voice_cast_settings .vc_tab > .vc_badge:not(.vc_warn) {
+        display: none !important;
+    }
+
+    #voice_cast_settings .vc_pages {
+        padding: 12px 14px 28px;
+    }
+
+    #voice_cast_settings .vc_page_title {
+        display: none;
+    }
+
+    /* 16px keeps iOS from zooming the page when a field is tapped */
+    #voice_cast_settings .vc_field {
+        font-size: 16px;
+    }
+
+    #voice_cast_settings .vc_cast_row {
+        grid-template-columns: 74px minmax(0, 1fr) auto;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--vc-line);
+    }
+
+    #voice_cast_settings .vc_cast_row > .vc_cast_names {
+        grid-column: 1 / -1;
+    }
+
+    #voice_cast_settings .vc_cast_btns > div {
+        width: 38px;
+    }
+
+    #voice_cast_settings .vc_custom_sfx_row {
+        flex-wrap: wrap;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--vc-line);
+    }
+
+    #voice_cast_settings .vc_custom_sfx_row:last-child {
+        padding-bottom: 0;
+        border-bottom: 0;
+    }
+
+    #voice_cast_settings .vc_custom_sfx_name {
+        flex: 1 1 0;
+    }
+
+    #voice_cast_settings .vc_custom_sfx_words {
+        flex: 1 1 100%;
+        order: 9;
+    }
+
+    #voice_cast_settings .vc_row > .vc_field[style*="width:auto"] {
+        flex: 1 1 100%;
+        width: 100% !important;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #voice_cast_settings * {
+        transition: none !important;
+    }
 }
