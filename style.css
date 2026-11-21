@@ -1354,7 +1354,7 @@ body.salty .vc_ui {
 
 #voice_cast_settings textarea.vc_field,
 .vc_ui textarea.vc_field {
-    min-height: 4.2em !important;
+    min-height: var(--vc-ta-min, 4.2em) !important;
 }
 
 #voice_cast_settings input[type="range"],
@@ -1825,6 +1825,11 @@ body.salty .vc_ui {
 .vc_ui.vc_saved {
     --vc-tap: 32px;
     --vc-pad: 4px 8px;
+}
+
+/* script lines are usually one sentence: keep the text boxes as low as they were */
+.vc_ui.vc_editor {
+    --vc-ta-min: 2.6em;
 }
 
 .vc_ui .vc_hint {
