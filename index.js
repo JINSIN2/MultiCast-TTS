@@ -70,6 +70,7 @@ const defaultSettings = Object.freeze({
     player: true,           // bottom mini player (swipe up / tap the little handle)       
     sfxVoiceId: '',
     sfxLocal: true,
+    sfxGenerate: true,       // no sound file fits → let ElevenLabs make the sound from the [tag] (off: such sounds are skipped)
     adultSfx: false,         // 🔞 also tag intimate sounds in adult scenes (kissing, wet sounds, skin slapping …)
     sfxOverlay: false,       // play sound effects under the voices instead of as their own turn
     customSfx: [],           // [{ id, name, words }] — user's own sound files (audio kept in IndexedDB, not in settings)          // bundled CC0 sound files first (free, any model); ElevenLabs tag only when nothing fits
@@ -530,6 +531,30 @@ function sfxLimit() {
     return getSettings().adultSfx ? 8 : 3;
 }
 
+/** Names of the user's 🔁 sounds (they repeat until told to stop) — the classifier is told which ones those are. */
+function loopSfxNames() {
+    const adultOn = !!getSettings().adultSfx;
+    return (getSettings().customSfx ?? [])
+        .filter(c => c?.id && c.loop && (adultOn || !c.adult))
+        .map(c => String(c.words || c.name || '').split(',')[0].trim().replace(/^~/, ''))
+        .filter(Boolean);
+}
+
+/**
+ * How a sound tag carries what the narration says about the sound (count, loudness, how long, when it ends).
+ * `form` shows the tag the way this prompt writes it: "[knock, x3]" (JSON), "knock, x3" (fast lines), or inside n="…".
+ */
+function sfxContextRules(form) {
+    const loops = loopSfxNames();
+    const tag = t => form.replace('%', t);
+    return [
+        ...(getSettings().sfxGenerate === false ? ['- Use ONLY sound tags from the list above (extras after a comma are fine). If no listed sound fits, add no sound for it.'] : []),
+        `- Sound extras — ONLY when the narration says so, added after a comma: a count stated for THAT sound ("knocked three times" → ${tag('knock, x3')}, at most x4); "soft" for a distant, faint or muffled sound and "loud" for a violent one (${tag('thunder, soft')}); seconds for a sound that clearly keeps going for a while ("typed for a while" → ${tag('typing, 4s')}, 2 to 8); "ongoing" for a steady background sound that continues through the scene and past this message (rain, a crackling fire, a running engine → ${tag('rain, ongoing')}). No extras by default; never stretch a single impact into a long sound.`,
+        `- When a sound that was going on clearly ENDS in the narration — the action stops, they pull apart, the scene or place changes, time skips, the rain lets up — add the sound ${tag('stop')} at that point (or ${tag('stop: rain')} to end only that one). This applies to "ongoing" sounds, also ones from the previous message${loops.length ? `, and to these sounds, which repeat until stopped: ${loops.join(', ')}` : ''}. It does not count toward the limit. If such a sound simply continues to the end of the message, add nothing.`,
+        '- Never add a sound for something that does not actually happen: negations ("did not slam the door"), wishes, plans, possibilities, comparisons, metaphors, memories, or sounds that are only mentioned in dialogue.',
+    ];
+}
+
 function buildClassifierPromptFrom(known, userName, text, prevText) {
     const s = getSettings();
 
@@ -560,6 +585,7 @@ function buildClassifierPromptFrom(known, userName, text, prevText) {
             `- Sound effects: when the NARRATION clearly describes a distinct, audible sound (e.g. a door creaking or slamming, footsteps, thunder rumbling, clapping, a dog barking, glass shattering, a loud knock, a gunshot), add a SEPARATE entry at the point where it happens: {"speaker":"SFX","gender":"u","type":"sfx","tag":"","text":"[door creaking]"}. "text" is ONE short English sound tag in square brackets. At most ${sfxLimit()} per message. Skip quiet or vague sounds, and never put sound tags inside dialogue lines.`,
             ...(s.adultSfx ? [ADULT_SFX_RULE] : []),
             `- Prefer these sound tags when one fits: ${[...customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))), SFX_TAG_HINT].join(', ')}.`,
+            ...sfxContextRules('[%]'),
             ...(translating ? ['- Sound-effect entries are NEVER translated: their "text" stays the English sound tag in [brackets].'] : []),
         ] : []),
         '- Also follow each character\'s temperament and acting note (a calm character stays composed; a hot-tempered one reacts sooner and stronger, within their range).',
@@ -856,6 +882,7 @@ function buildFastPrompt(text, segs, prevText, userName) {
             `- Sound effects: when the NARRATION clearly describes a distinct, audible sound (a door slamming, footsteps, thunder, glass shattering, a knock, a gunshot), add a line S|after|sound where "after" is the number of the quote it comes after (0 = before the first quote) and "sound" is ONE short English sound tag. At most ${sfxLimit()}. Skip quiet or vague sounds.`,
             ...(s.adultSfx ? [ADULT_SFX_RULE] : []),
             `- Prefer these sound tags when one fits: ${[...customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))), SFX_TAG_HINT].join(', ')}.`,
+            ...sfxContextRules('S|after|%'),
         ] : []),
         '- Output ONLY these lines. No prose, no JSON, no code fences.',
         '',
@@ -905,7 +932,9 @@ function parseFastOutput(raw, segs) {
     }
     const script = [];
     const pushSfx = (after) => {
-        for (const tag of (sfxAfter.get(after) ?? []).slice(0, sfxLimit())) {
+        let left = sfxLimit();
+        for (const tag of sfxAfter.get(after) ?? []) {
+            if (!parseSfx(tag).stop && left-- <= 0) continue;
             script.push({ speaker: 'SFX', gender: 'u', type: 'sfx', tag: '', text: `[${tag}]` });
         }
     };
@@ -952,6 +981,7 @@ function inlineTagInstruction() {
             `- Where the narration describes a distinct audible sound (a door slam, footsteps, a gunshot, thunder …), put <sfx n="door slam"/> right at that spot — ONE short English sound tag. At most ${sfxLimit()} per reply.`,
             ...(s.adultSfx ? ['- In adult scenes (all characters adults), also mark intimate sounds the same way: kiss, wet squelch, slurp, lick, skin slap, bed creak, panting, sheets rustle.'] : []),
             ...(customSfxLibrary().length ? [`- Prefer these sound tags when one fits: ${customSfxLibrary().flatMap(e => e.words.filter(w => !w.startsWith('~'))).slice(0, 40).join(', ')}.`] : []),
+            `- Only when the narration says so, add after a comma inside n: a stated count (<sfx n="knock, x3"/>), or "soft" / "loud". When a background or repeating sound${loopSfxNames().length ? ` (${loopSfxNames().join(', ')})` : ''} clearly ends, put <sfx n="stop"/> there. No sound for things that do not actually happen.`,
         ] : []),
         ...inlineActingNotes(),
         '- One tag per quote. Write everything else exactly as you normally would. The tags are hidden from the reader; never mention them.',
@@ -1062,7 +1092,7 @@ function alignVoiceTags(message, text) {
     const speech = tagged.filter(t => !t.thought && !t.sfx);
     const s = getSettings();
     let sfxLeft = s.sfxEnabled ? sfxLimit() : 0;
-    const keepSfx = () => (sfxLeft-- > 0);
+    const keepSfx = (t) => (parseSfx(t?.text).stop || sfxLeft-- > 0); // a stop never falls to the limit
     const flat = t => normForMatch(t).replace(/\s+/g, '');
     const shownIsOriginal = flat(cleanMessageText(String(message.mes).replace(VOICE_TAG_RE, '$2'))) === flat(text);
     let shownRaw = message.mes;
@@ -1083,7 +1113,7 @@ function alignVoiceTags(message, text) {
             text: lineText,
         };
     };
-    const extra = t => (t.sfx ? keepSfx() : (t.thought && s.includeThoughts));
+    const extra = t => (t.sfx ? keepSfx(t) : (t.thought && s.includeThoughts));
 
     if (!shownIsOriginal) {
         // reading a translation: same number of quotes → the n-th tag belongs to the n-th translated quote
@@ -1091,7 +1121,7 @@ function alignVoiceTags(message, text) {
         let k = 0;
         const out = [];
         for (const t of tagged) {
-            if (t.sfx) { if (keepSfx()) out.push(toLine(t)); continue; }
+            if (t.sfx) { if (keepSfx(t)) out.push(toLine(t)); continue; }
             if (t.thought) continue;
             out.push(toLine(t, quotes[k++].text));
         }
@@ -1497,6 +1527,8 @@ function findCastEntry(speaker) {
 
 function pickVoice(line) {
     const s = getSettings();
+    if (isSfxStop(line)) return '';
+    if (line.type === 'sfx' && s.sfxGenerate === false) return '';
     if (line.voiceId) return line.voiceId; // manual override from the script editor
     if (line.type === 'sfx') return s.sfxVoiceId || s.unknownVoiceId || s.maleVoiceId || s.femaleVoiceId || '';
     const entry = findCastEntry(line.speaker);
@@ -1512,8 +1544,9 @@ function pickVoice(line) {
 function sfxPlayable(line = null) {
     const s = getSettings();
     if (!s.sfxEnabled) return false;
+    if (line && isSfxStop(line)) return true;
     if (line && localSfxFor(line)) return true;
-    return !!modelInfo(s.model).tags;
+    return s.sfxGenerate !== false && !!modelInfo(s.model).tags;
 }
 
 // ---------------------------------------------------------------------------
@@ -1566,6 +1599,49 @@ const SFX_LIBRARY = [
 ];
 const SFX_TAG_HINT = 'door creaking, door slam, door opening, door closing, knock, footsteps, running, glass shattering, glasses clink, gunshot, pistol shot, shotgun, bullet hit, explosion, thunder, bell, gong, unlock, keys, paper rustling, splash, switch click, dishes, pot, metal clang, box opening, pick up, drop, smash, impact, punch, thud, wood cracking, stones, wind, whoosh';
 
+/**
+ * A sound line's text is "[name]" plus optional extras after commas, written by the AI or by hand:
+ *   [knock, x3]        the narration counted it (2–4)
+ *   [thunder, soft]    distant / faint · [door slam, loud]
+ *   [typing, 4s]       keeps going for a few seconds under the voices (1–8s)
+ *   [rain, ongoing]    background sound: goes on under the voices and into the next message
+ *   [stop]             every repeating / background sound fades out here · [stop: rain] just that one
+ * Anything it does not know stays part of the name, so plain old tags work as before.
+ */
+const SFX_SOFT_WORDS = new Set(['soft', 'softly', 'quiet', 'quietly', 'faint', 'faintly', 'distant', 'far', 'muffled', 'gentle']);
+const SFX_LOUD_WORDS = new Set(['loud', 'loudly', 'hard', 'heavy', 'violent', 'close']);
+const SFX_ONGOING_WORDS = new Set(['ongoing', 'continues', 'continuing', 'background', 'ambient']);
+function parseSfx(text) {
+    const out = { name: '', count: 1, gain: 1, seconds: 0, ongoing: false, stop: false };
+    const parts = String(text ?? '').replace(/[[\]]/g, ' ').split(/[,;]/).map(x => x.trim()).filter(Boolean);
+    if (!parts.length) return out;
+    const stop = /^(?:stop|stops|end|silence)\b[:\s-]*(.*)$/i.exec(parts[0]);
+    if (stop) return { ...out, stop: true, name: [stop[1], ...parts.slice(1)].join(' ').replace(/\b(?:all|sounds?|loops?|sfx)\b/gi, ' ').trim() };
+    const names = [parts[0]];
+    for (const part of parts.slice(1)) {
+        const q = part.toLowerCase();
+        let m;
+        if ((m = /^(?:x|×)\s*(\d)$|^(\d)\s*(?:x|×|times?)$/.exec(q))) out.count = Math.min(4, Math.max(1, Number(m[1] ?? m[2])));
+        else if ((m = /^(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?$/.exec(q))) out.seconds = Math.min(8, Math.max(1, Number(m[1])));
+        else if (SFX_SOFT_WORDS.has(q)) out.gain = 0.55;
+        else if (SFX_LOUD_WORDS.has(q)) out.gain = 1.3;
+        else if (SFX_ONGOING_WORDS.has(q)) out.ongoing = true;
+        else names.push(part);
+    }
+    // "knock x3" without the comma
+    const tail = /^(.*\S)\s+(?:x|×)\s*(\d)$/i.exec(names[0]);
+    if (tail && out.count === 1) { names[0] = tail[1]; out.count = Math.min(4, Math.max(1, Number(tail[2]))); }
+    out.name = names.join(' ').trim();
+    return out;
+}
+function isSfxStop(line) {
+    return line?.type === 'sfx' && parseSfx(line.text).stop;
+}
+/** Does this sound go on under the voices instead of playing once? (a 🔁 sound, or the tag says so) */
+function sfxIsBed(line, fx = parseSfx(line?.text)) {
+    return line?.type === 'sfx' && !fx.stop && (isLoopSfxKey(line.audioKey) || fx.seconds > 0 || fx.ongoing);
+}
+
 function sfxWords(text) {
     return String(text ?? '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
 }
@@ -1586,7 +1662,9 @@ function customSfxLibrary() {
  */
 function localSfxFor(line) {
     if (line?.type !== 'sfx') return '';
-    const words = sfxWords(line.text);
+    const fx = parseSfx(line.text);
+    if (fx.stop) return '';
+    const words = sfxWords(fx.name);
     if (!words.length) return '';
     const mine = matchSfx(words, customSfxLibrary());
     if (mine) return mine;
@@ -1654,7 +1732,9 @@ function buildTtsText(line) {
     const s = getSettings();
     if (line.type === 'sfx') {
         // a line with only [tags] counts as empty for ElevenLabs → add a quiet "..." so the tag has something to attach to
-        const t = String(line.text ?? '').trim();
+        const fx = parseSfx(line.text);
+        const plain = fx.count === 1 && fx.gain === 1 && !fx.seconds && !fx.ongoing;
+        const t = plain ? String(line.text ?? '').trim() : `[${fx.name}]`;
         const tag = t.startsWith('[') ? t.match(/^(\[[^\]]*\]\s*)+/)?.[0]?.trim() ?? t : `[${t}]`;
         const rest = t.startsWith('[') ? t.slice(tag.length).trim() : '';
         return `${tag} ${rest || '...'}`;
@@ -2802,19 +2882,30 @@ function togglePause() {
 
 // 효과음 겹쳐 재생: sounds that play under the voices (not waited for)
 const overlayAudios = new Set();
-function playOverlay(url, line) {
+function playOverlay(url, line, fx = null) {
     const audio = new Audio(url);
     const master = Number(getSettings().volume);
-    audio.volume = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.85));
+    audio.volume = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.85 * (fx?.gain ?? 1)));
     overlayAudios.add(audio);
     const done = () => overlayAudios.delete(audio);
-    audio.onended = done;
+    // "x3": the same short sound again, a beat apart
+    let left = Math.max(1, fx?.count ?? 1) - 1;
+    audio.onended = () => {
+        if (left-- > 0 && overlayAudios.has(audio)) {
+            setTimeout(() => { if (overlayAudios.has(audio)) { audio.currentTime = 0; audio.play().catch(done); } }, 110);
+        } else done();
+    };
     audio.onerror = done;
     audio.play().catch(done);
 }
 
-// 🔁 반복: a sound of mine marked 🔁 loops quietly (30%) under the voices until the message ends, then fades out.
+// 🔁 반복: a sound of mine marked 🔁 (or a tag with "4s" / "ongoing") loops quietly (30%) under the voices.
+// It ends at a "[stop]" line, after its seconds, or when the message ends; an "ongoing" one carries into the next message.
 const bedAudios = new Set();
+let bedBoost = 1;        // > 1 between lines: the background comes up a little while nobody speaks
+let ambientMsg = null;   // message that left an "ongoing" sound playing
+let ambientTimer = null; // …which fades out by itself if the next message is not played soon
+const AMBIENT_GRACE_MS = 20000;
 function isLoopSfxKey(key) {
     if (!key || !isLocalSfxKey(key)) return false;
     const id = customSfxIdFromKey(key);
@@ -2832,6 +2923,7 @@ function fadeAudio(audio, to, ms, then) {
 }
 // up to 3 loops play together (kiss + bed creak …); the more there are, the softer each one gets
 const BED_MAX = 3;
+const BED_GAP_BOOST = 1.5;
 const BED_GAIN = [1, 0.8, 0.65];
 function activeBeds() {
     return [...bedAudios].filter(a => !a._vcStopping);
@@ -2839,16 +2931,29 @@ function activeBeds() {
 function balanceBeds(ms = 400) {
     const live = activeBeds();
     const g = BED_GAIN[Math.min(live.length, BED_GAIN.length) - 1] ?? 0.65;
-    for (const a of live) fadeAudio(a, Math.min(1, a._vcBase * g), ms);
+    for (const a of live) fadeAudio(a, Math.min(1, a._vcBase * g * bedBoost), ms);
 }
-function playBed(url, line) {
+function setBedBoost(boost, ms = 300) {
+    if (bedBoost === boost) return;
+    bedBoost = boost;
+    if (bedAudios.size) balanceBeds(ms);
+}
+function playBed(url, line, fx = null) {
     const key = line?.audioKey || url;
     // the same loop again → it is already playing, keep it going
-    if (activeBeds().some(a => a._vcKey === key)) return;
+    const same = activeBeds().find(a => a._vcKey === key);
+    if (same) {
+        if (fx?.ongoing) same._vcOngoing = true;
+        return;
+    }
     const master = Number(getSettings().volume);
     const audio = new Audio(url);
     audio._vcKey = key;
-    audio._vcBase = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.3));
+    audio._vcBase = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.3 * (fx?.gain ?? 1)));
+    audio._vcName = fx?.name ?? '';
+    audio._vcOngoing = !!fx?.ongoing;
+    // "4s": this one ends by itself
+    if (fx?.seconds > 0 && !fx.ongoing) audio._vcTimer = setTimeout(() => { if (bedAudios.has(audio) && !audio._vcStopping) stopBed(audio, 700); }, fx.seconds * 1000);
     audio.volume = 0;
     const done = () => { clearInterval(audio._vcFade); bedAudios.delete(audio); };
     audio.onerror = done;
@@ -2861,21 +2966,49 @@ function playBed(url, line) {
 }
 function stopBed(audio, ms) {
     audio._vcStopping = true;
+    clearTimeout(audio._vcTimer);
     fadeAudio(audio, 0, ms, () => { audio.pause(); bedAudios.delete(audio); });
     balanceBeds(ms);
 }
-function stopAllBeds(ms = 0) {
+function stopAllBeds(ms = 0, { keepAmbient = false } = {}) {
     for (const a of [...bedAudios]) {
+        if (keepAmbient && a._vcOngoing && !a._vcStopping) continue;
         if (ms > 0 && !a.paused) stopBed(a, ms);
-        else { clearInterval(a._vcFade); a.pause(); bedAudios.delete(a); }
+        else { clearInterval(a._vcFade); clearTimeout(a._vcTimer); a.pause(); bedAudios.delete(a); }
+    }
+    if (!keepAmbient) { clearTimeout(ambientTimer); ambientTimer = null; ambientMsg = null; }
+}
+/** A "[stop]" line: every repeating sound fades out; "[stop: rain]" only the one that tag would play. */
+function stopBedsNamed(name, ms = 1200) {
+    const live = activeBeds();
+    if (!name) { for (const a of live) stopBed(a, ms); return; }
+    const local = localSfxFor({ type: 'sfx', text: name });
+    const wanted = new Set(sfxWords(name));
+    for (const a of live) {
+        const sameFile = local && a._vcKey === SFX_KEY_PREFIX + local;
+        const sameName = sfxWords(a._vcName).some(w => wanted.has(w));
+        if (sameFile || sameName) stopBed(a, ms);
     }
 }
+/** The message is over: repeating sounds fade; an "ongoing" one stays for the next message, but not for long. */
+function endMessageBeds(messageId) {
+    setBedBoost(1, 0);
+    stopAllBeds(1800, { keepAmbient: true });
+    clearTimeout(ambientTimer);
+    ambientTimer = null;
+    if (!activeBeds().length || messageId === null) { stopAllBeds(1800); return; }
+    ambientMsg = messageId;
+    ambientTimer = setTimeout(() => stopAllBeds(2500), AMBIENT_GRACE_MS);
+}
 
-function stopPlayback() {
+function stopPlayback(opts = null) {
     const wasPlaying = apiActive;
     for (const a of overlayAudios) a.pause();
     overlayAudios.clear();
-    stopAllBeds(300);
+    // only playMessage() asks to keep a background sound going (its argument is never an event object)
+    const keepAmbient = opts?.keepAmbient === true;
+    bedBoost = 1;
+    stopAllBeds(300, { keepAmbient });
     session++;
     paused = false;
     setNowPlaying(null);
@@ -2931,13 +3064,13 @@ function skipLine(delta) {
     finishCurrentLine();
 }
 
-function playUrl(url, mySession, line = null) {
+function playUrl(url, mySession, line = null, gainMul = 1) {
     return new Promise((resolve) => {
         if (mySession !== session) return resolve();
         finishCurrentLine = resolve;
         const audio = new Audio(url);
         const master = Number(getSettings().volume);
-        const vol = (Number.isNaN(master) ? 1 : Math.max(0, master)) * castVolumeFor(line);
+        const vol = (Number.isNaN(master) ? 1 : Math.max(0, master)) * castVolumeFor(line) * (Number(gainMul) > 0 ? Number(gainMul) : 1);
         audio.volume = Math.min(1, vol);
         const own = Number(line ? findCastEntry(line.speaker)?.rate : NaN);
         const rate = (Number(getSettings().rate) || 1) * (own > 0 ? own : 1);
@@ -2989,6 +3122,7 @@ function synthesizeAll(lines, isActive, onProgress = null) {
         while (next < lines.length && isActive()) {
             const i = next++;
             const { text, voiceId, src } = lines[i];
+            if (voiceId === SFX_STOP_VOICE) { finish(i, ''); continue; }
             try {
                 // 1) audio already pinned to this script line → replay it exactly, whatever the settings are now
                 if (src?.audioKey && !src._fresh) {
@@ -3045,13 +3179,16 @@ function userCharacterNames() {
     return names;
 }
 
+const SFX_STOP_VOICE = 'sfx-stop'; // marks a "[stop]" line: it has no audio, it only ends the repeating sounds
 function buildPlayableLines(script, { keepThoughts = false } = {}) {
     const s = getSettings();
     return script
         .filter(l => keepThoughts || s.includeThoughts || l.type !== 'thought')
         .filter(l => keepThoughts || listenAllows(l))
         .filter(l => l.type !== 'sfx' || keepThoughts || sfxPlayable(l))
-        .map(l => ({ src: l, voiceId: pickVoice(l) || (localSfxFor(l) ? 'local-sfx' : ''), ttsText: buildTtsText(l) }))
+        .map(l => (isSfxStop(l)
+            ? { src: l, voiceId: SFX_STOP_VOICE, ttsText: '' }
+            : { src: l, voiceId: pickVoice(l) || (localSfxFor(l) ? 'local-sfx' : ''), ttsText: buildTtsText(l) }))
         .filter(l => l.voiceId || l.src.audioKey);
 }
 
@@ -3152,7 +3289,10 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
     const generationAtStart = generationEpoch;
     if (savedOnly) await loadIndex();
 
-    stopPlayback();
+    // a background sound left by the message just before this one keeps playing into it
+    const carry = ambientMsg !== null && messageId !== null && messageId > ambientMsg && messageId - ambientMsg <= 2 && !startAt;
+    stopPlayback({ keepAmbient: carry });
+    if (carry) { clearTimeout(ambientTimer); ambientTimer = null; }
     const mySession = session;
     playingMessageId = messageId;
     apiSetPlaying(messageId);
@@ -3174,7 +3314,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
 
         if (generationAtStart !== generationEpoch) return;
         let lines = buildPlayableLines(script, { keepThoughts: !!givenScript });
-        if (savedOnly) lines = lines.filter(l => keyHasAudio(l.src.audioKey));
+        if (savedOnly) lines = lines.filter(l => keyHasAudio(l.src.audioKey) || l.voiceId === SFX_STOP_VOICE);
         if (!lines.length) {
             if (script.length && !s.maleVoiceId && !s.femaleVoiceId && !s.unknownVoiceId) {
                 toastr.warning('목소리가 설정되지 않았어요. 확장 설정에서 기본 목소리를 골라주세요.', 'MultiCast TTS');
@@ -3228,15 +3368,23 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             }
             const url = await audioPromises[i];
             if (mySession !== session || generationAtStart !== generationEpoch) return;
+            const fx = lines[i].src.type === 'sfx' ? parseSfx(lines[i].src.text) : null;
+            if (fx?.stop) {
+                // "[stop]": the repeating / background sounds end here
+                await waitWhilePaused(mySession, generationAtStart);
+                if (mySession !== session || generationAtStart !== generationEpoch) return;
+                stopBedsNamed(fx.name);
+                continue;
+            }
             if (!url) continue;
             const lineText = lines[i].src.orig ?? lines[i].src.text;
             // 겹쳐 재생: a sound effect starts and the next line follows right away
-            const loopSfx = lines[i].src.type === 'sfx' && isLoopSfxKey(lines[i].src.audioKey);
-            if (lines[i].src.type === 'sfx' && (loopSfx || getSettings().sfxOverlay)) {
+            const loopSfx = !!fx && sfxIsBed(lines[i].src, fx);
+            if (fx && (loopSfx || getSettings().sfxOverlay)) {
                 await waitWhilePaused(mySession, generationAtStart);
                 if (mySession !== session || generationAtStart !== generationEpoch) return;
-                if (loopSfx) playBed(url, lines[i].src); // 🔁 sounds: loop under the voices till the message ends
-                else playOverlay(url, lines[i].src);
+                if (loopSfx) playBed(url, lines[i].src, fx); // loops under the voices till "[stop]", its seconds, or the message ends
+                else playOverlay(url, lines[i].src, fx);
                 continue;
             }
             if (jumped) {
@@ -3266,8 +3414,16 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             const end = highlightLine(messageId, lineText, lines[i].src, hlCursor);
             if (end) hlCursor = end;
             prevPlayed = lines[i].src;
-            await playUrl(url, mySession, lines[i].src);
+            if (!fx) setBedBoost(1, 200); // a voice: the background steps back
+            await playUrl(url, mySession, lines[i].src, fx?.gain ?? 1);
+            // "x3" on a sound that plays by itself (겹쳐 재생 off)
+            for (let k = 1; fx && k < fx.count; k++) {
+                if (mySession !== session || generationAtStart !== generationEpoch || playCtl.jump !== null) break;
+                await sleep(110);
+                await playUrl(url, mySession, lines[i].src, fx.gain);
+            }
             if (mySession !== session || generationAtStart !== generationEpoch) return;
+            if (!fx) setBedBoost(BED_GAP_BOOST, 350); // …and comes up a little in the gap
             // 한 줄씩: stop after each line and wait for ⏭ / ⏮ / ⏯
             if (generationAtStart === generationEpoch && getSettings().stepMode && playCtl.jump === null) {
                 paused = true;
@@ -3289,7 +3445,7 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
         if (mySession === session) setStatus(messageId, '<i class="fa-solid fa-triangle-exclamation"></i> 실패', 'error');
     } finally {
         if (mySession === session) {
-            stopAllBeds(1800); // 배경에 깔린 소리: fade out as the message ends
+            endMessageBeds(failed || generationAtStart !== generationEpoch ? null : messageId); // 배경에 깔린 소리
             clearHighlight();
             if (messageId !== null) {
                 setButtonState(messageId, false);
@@ -4043,19 +4199,31 @@ async function mixMessageAudio(lines, urls, messageId) {
     let rateIgnored = (Number(s.rate) || 1) !== 1;
     for (let i = 0; i < lines.length; i++) {
         const buf = bufs[i];
-        if (!buf) continue;
         const src = lines[i].src;
-        count++;
-        if (src.type === 'sfx' && isLoopSfxKey(src.audioKey)) {
-            const key = src.audioKey;
-            if (beds.some(b => b.key === key && b.end === null)) continue; // same loop already going
-            const live = beds.filter(b => b.end === null);
-            if (live.length >= BED_MAX) { live[0].end = t; live[0].fade = 0.8; }
-            beds.push({ buf, start: t, end: null, base: castVolumeFor(src) * 0.3, key });
+        const fx = src.type === 'sfx' ? parseSfx(src.text) : null;
+        if (fx?.stop) {
+            // "[stop]": the loops still going end here ("[stop: rain]" only that one)
+            const wanted = new Set(sfxWords(fx.name));
+            for (const b of beds) {
+                if (b.end !== null && b.end <= t) continue;
+                if (fx.name && !sfxWords(b.name).some(w => wanted.has(w))) continue;
+                b.end = t; b.fade = 1.2;
+            }
             continue;
         }
-        if (src.type === 'sfx' && s.sfxOverlay) {
-            voices.push({ buf, at: t, gain: castVolumeFor(src) * 0.85 });
+        if (!buf) continue;
+        count++;
+        if (fx && sfxIsBed(src, fx)) {
+            const key = src.audioKey;
+            if (beds.some(b => b.key === key && (b.end === null || b.end > t))) continue; // same loop already going
+            const live = beds.filter(b => b.end === null);
+            if (live.length >= BED_MAX) { live[0].end = t; live[0].fade = 0.8; }
+            const timed = fx.seconds > 0 && !fx.ongoing;
+            beds.push({ buf, start: t, end: timed ? t + fx.seconds : null, fade: 0.7, base: castVolumeFor(src) * 0.3 * fx.gain, key, name: fx.name });
+            continue;
+        }
+        if (fx && s.sfxOverlay) {
+            for (let k = 0; k < fx.count; k++) voices.push({ buf, at: t + k * (buf.duration + 0.11), gain: castVolumeFor(src) * 0.85 * fx.gain });
             continue;
         }
         const text = src.orig ?? src.text;
@@ -4070,8 +4238,13 @@ async function mixMessageAudio(lines, urls, messageId) {
         if (range?.vcEnd) cursor = range.vcEnd;
         const own = Number(findCastEntry(src.speaker)?.rate);
         if (own > 0 && own !== 1) rateIgnored = true;
-        voices.push({ buf, at: t, gain: castVolumeFor(src) });
+        voices.push({ buf, at: t, gain: castVolumeFor(src) * (fx?.gain ?? 1) });
         t += buf.duration;
+        // a sound that plays by itself (겹쳐 재생 off): "x3" in a row
+        for (let k = 1; fx && k < fx.count; k++) {
+            voices.push({ buf, at: t + 0.11, gain: castVolumeFor(src) * fx.gain });
+            t += 0.11 + buf.duration;
+        }
         prev = src;
     }
     const end = t;
@@ -5080,6 +5253,7 @@ function editorRowHtml() {
                 <option value="speech">💬 대사</option>
                 <option value="thought">💭 속마음</option>
                 <option value="sfx">🔔 효과음</option>
+                <option value="sfxstop">🔇 반복 끄기</option>
             </select>
             <input type="text" class="vc_field vc_e_speaker" placeholder="화자" title="화자 이름 (캐스트 표와 매칭돼요)" />
             <select class="vc_field vc_e_gender" title="성별">
@@ -5106,7 +5280,14 @@ function editorRowHtml() {
 
 function makeEditorRow(line) {
     const $row = $(editorRowHtml());
-    $row.find('.vc_e_type').val(['thought', 'sfx'].includes(line.type) ? line.type : 'speech');
+    $row.find('.vc_e_type').val(isSfxStop(line) ? 'sfxstop' : ['thought', 'sfx'].includes(line.type) ? line.type : 'speech');
+    // 🔇 반복 끄기 is a sound line that says "[stop]": picking it writes that for you
+    $row.find('.vc_e_type').on('change', function () {
+        const $text = $row.find('.vc_e_text');
+        const stopNow = parseSfx($text.val()).stop;
+        if (this.value === 'sfxstop' && !stopNow) $text.val('[stop]').trigger('input');
+        else if (this.value !== 'sfxstop' && stopNow) $text.val('').trigger('input');
+    });
     $row.find('.vc_e_speaker').val(line.speaker ?? '');
     $row.find('.vc_e_gender').val(['m', 'f'].includes(line.gender) ? line.gender : 'u');
     $row.find('.vc_e_tag').val(line.tag ?? '');
@@ -5153,10 +5334,11 @@ function readEditorRow($row, { ignoreVoice = false } = {}) {
     const line = {
         speaker: String($row.find('.vc_e_speaker').val() ?? '').trim() || 'unknown',
         gender: String($row.find('.vc_e_gender').val() ?? 'u'),
-        type: ['thought', 'sfx'].includes($row.find('.vc_e_type').val()) ? $row.find('.vc_e_type').val() : 'speech',
+        type: $row.find('.vc_e_type').val() === 'sfxstop' ? 'sfx' : ['thought', 'sfx'].includes($row.find('.vc_e_type').val()) ? $row.find('.vc_e_type').val() : 'speech',
         tag: String($row.find('.vc_e_tag').val() ?? '').replace(/[[\]]/g, '').trim(),
         text: String($row.find('.vc_e_text').val() ?? '').trim(),
     };
+    if ($row.find('.vc_e_type').val() === 'sfxstop' && !parseSfx(line.text).stop) line.text = '[stop]';
     if ($row.data('orig')) line.orig = $row.data('orig');
     const voiceId = ignoreVoice ? '' : String($row.find('.vc_e_voice').val() ?? '');
     if (voiceId) line.voiceId = voiceId;
@@ -5184,6 +5366,8 @@ function buildEditor(messageId, script) {
             <details class="vc_hint vc_editor_help">
                 <summary>고친 줄만 새로 만들고, 안 고친 줄은 저장된 음성을 다시 써요. ⓘ</summary>
                 화자·성별·목소리·태그·대사를 고칠 수 있어요.
+                <br>🔔 효과음 줄은 쉼표 뒤에 덧붙일 수 있어요: <code>[knock, x3]</code> 세 번 · <code>[thunder, soft]</code> 작게 (<code>loud</code> 크게) · <code>[typing, 4s]</code> 4초 동안 · <code>[rain, ongoing]</code> 다음 메시지까지 깔리는 배경음.
+                <br>🔇 반복 끄기 줄에 닿으면 깔려 있던 반복 · 배경 소리가 꺼져요. <code>[stop: rain]</code>처럼 적으면 그 소리만 꺼요.
                 <br>📚 메시지를 고치거나 다시 분류하면 예전 대본이 ${SCRIPT_HISTORY_MAX}개까지 남아요. 다른 음성 언어로 만든 대본도 ◀ ▶로 넘겨서 듣거나 받을 수 있어요. 채팅 파일에 같이 저장돼서 파일이 조금 커지고, 오래된 음성은 저장 공간 정리 때 지워질 수 있어요 (⭐ 즐겨찾기는 안 지워져요).
             </details>
             ${tagsOn ? '' : '<div class="vc_hint">⚠️ 지금 모델/설정에서는 태그가 꺼져 있어서 태그 없이 읽어요.</div>'}
@@ -5921,12 +6105,15 @@ function settingsHtml() {
                     <div class="vc_group_body">
                 <label class="vc_check vc_sw"><input id="voice_cast_sfx" type="checkbox" /><span>효과음 넣기</span></label>
                 <div class="vc_hint vc_sub">지문의 문 쾅, 발소리 같은 소리를 대본에 따로 한 줄로 넣어요</div>
+                <div class="vc_hint">지문에 적힌 횟수 · 세기 · 길이를 따라가고, 비 같은 배경 소리는 다음 메시지까지 이어져요. 🔁 반복 소리는 장면이 끝나는 자리에서 꺼져요(대본의 🔇 반복 끄기 줄).</div>
                 <label class="vc_check vc_sw"><input id="voice_cast_sfx_overlay" type="checkbox" /><span>효과음을 대사랑 겹쳐서 재생</span></label>
                 <div class="vc_hint vc_sub">효과음이 따로 차례를 기다리지 않고 대사 밑에 깔려요</div>
                 <label class="vc_check vc_sw"><input id="voice_cast_sfx_adult" type="checkbox" /><span>🔞 성인 장면 효과음도 넣기</span></label>
                 <div class="vc_hint vc_sub">키스·젖은 소리·살 부딪히는 소리 같은 것도 효과음 줄로 넣어요. 소리 파일은 아래 '내 효과음'에 직접 넣고 영어 단어(kiss, wet, slap, slurp …)를 붙인 뒤 🔞 버튼을 켜주세요. 🔞 켠 소리는 이 옵션이 켜져 있을 때만 나와요. 한 메시지에 최대 8개까지 넣어요. 분류 AI나 ElevenLabs가 거절하면 안 나올 수 있어요.</div>
                 <label class="vc_check vc_sw"><input id="voice_cast_sfx_local" type="checkbox" /><span>내장 효과음 파일 먼저 쓰기</span></label>
                 <div class="vc_hint vc_sub">문, 발소리, 총소리, 천둥 등 47개 소리가 들어 있어요. 크레딧을 안 쓰고 어느 모델에서나 나와요.</div>
+                <label class="vc_check vc_sw"><input id="voice_cast_sfx_generate" type="checkbox" /><span>없는 소리는 ElevenLabs로 만들기</span></label>
+                <div class="vc_hint vc_sub">끄면 파일이 있는 소리만 나와요. 엉뚱한 소리가 나거나 크레딧이 아까울 때 꺼두세요.</div>
                 <div class="vc_hint">내장 소리에 맞는 게 없으면 ElevenLabs [태그]로 만들어요. 이건 Eleven v3 / v4 / v4 Turbo처럼 [태그]를 아는 모델에서만 나와요. 효과음은 대사와 섞지 않고 대본에 🔔 효과음 줄로 따로 들어가서, 편집기에서 고치거나 지울 수 있어요. 켠 뒤 새로 분류하는 메시지부터 들어가요.</div>
                 <div class="vc_custom_sfx">
                     <div class="vc_row vc_custom_sfx_head" style="flex-wrap:wrap;gap:4px">
@@ -6259,6 +6446,7 @@ function bindSettingsUI() {
     bindCustomSfxUI();
     $('#voice_cast_sfx_local').prop('checked', s.sfxLocal !== false).on('change', function () { s.sfxLocal = !!this.checked; save(); });
     bindCheck('#voice_cast_sfx_overlay', 'sfxOverlay');
+    $('#voice_cast_sfx_generate').prop('checked', s.sfxGenerate !== false).on('change', function () { s.sfxGenerate = !!this.checked; save(); });
     bindCheck('#voice_cast_sfx_adult', 'adultSfx');
     $('#voice_cast_sfx_adult').on('change', () => setTimeout(updateInlinePrompt, 0));
     $('#voice_cast_sfx').prop('checked', !!s.sfxEnabled).on('change', function () { setSfx($(this).prop('checked')); });
