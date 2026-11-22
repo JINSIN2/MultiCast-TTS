@@ -795,7 +795,7 @@ body.vc_hold_on #chat .mes_text {
     }
 }
 
-/* Blue Lemonade: follow its palette instead of fighting it */
+/* Themes that restyle the whole UI: follow their palette instead of fighting it */
 body.salty #voice_cast_overlay,
 body.salty .vc_ui {
     --vc-text: var(--salty-text, var(--SmartThemeBodyColor, #dcdcd2));
@@ -1317,7 +1317,7 @@ body.salty .vc_ui {
 }
 
 /* ---- theme-proof controls ----
-   A theme like Blue Lemonade restyles every checkbox / select / text field with !important and very long
+   Some themes restyle every checkbox / select / text field with !important and very long
    selectors. Inside a cascade layer, !important wins over any unlayered !important no matter how specific,
    so the few declarations that must survive live here. Everything in this block has to be !important
    (plain declarations in a layer lose to every unlayered rule). Never put display/width on .vc_field here:
