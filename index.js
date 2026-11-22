@@ -1567,13 +1567,18 @@ try { SFX_BASE = new URL('./sfx/', import.meta.url).href; } catch { /* keep the 
 const SFX_KEY_PREFIX = 'sfxfile:';
 const SFX_LIBRARY = [
     // sounds we don't ship: never pass these off as something else (falls back to the ElevenLabs tag)
-    { files: [], words: ['dog', 'bark', 'clap', 'applause', 'rain', 'siren', 'car', 'engine', 'horn', 'scream', 'laugh', 'music'] },
+    { files: [], words: ['dog', 'bark', 'applause', 'siren', 'car', 'engine', 'horn', 'scream', 'laugh', 'music'] },
     // 3.3.0: made for this extension from scratch (synthesized), so there is no recording to credit
     { files: ['phone_vibrate'], words: ['vibrat', 'phone buzz', 'buzzing phone', 'buzz'] },
     { files: ['phone_ring'], words: ['phone ring', 'ringing phone', 'ringtone', 'cellphone ring', 'incoming call', '~phone', '~cellphone'] },
     { files: ['alarm_beep'], words: ['alarm', 'beep', 'alarm clock'] },
     { files: ['notification'], words: ['notification', 'message alert', 'text alert', 'new message', 'ping'] },
     { files: ['heartbeat'], words: ['heartbeat', 'heart beat', 'heart pound', 'heart thump', 'pounding heart'] },
+    // rain: 18-second loops (CC0 recordings) — these always go on under the voices, see SFX_BED_FILES
+    { files: ['rain_heavy'], words: ['heavy rain', 'pouring rain', 'downpour', 'rainstorm', 'torrential', 'rain hammering', 'rain pounding'] },
+    { files: ['rain_light'], words: ['light rain', 'gentle rain', 'soft rain', 'drizzle', 'rain patter', 'pattering rain'] },
+    { files: ['rain'], words: ['rain'] },
+    { files: ['clap'], words: ['clap', 'hand clap', 'claps hands', 'clapping hands'] }, // one person, one clap: [clap, x3] / [clap, x4, fast] for more
     { files: ['door_slam', 'door_slam_2'], words: ['slam', 'door bang', 'door banging'] },
     { files: ['door_creak', 'door_creak_2'], words: ['creak', 'squeak'] },
     { files: ['door_close'], words: ['door close', 'door closing', 'door shut', 'closing door', 'door click'] },
@@ -1613,7 +1618,7 @@ const SFX_LIBRARY = [
     { files: ['wind'], words: ['wind', 'breeze', 'howl', 'gust'] },
     { files: ['whoosh'], words: ['whoosh', 'swish', 'swoosh', 'swing', 'swipe'] },
 ];
-const SFX_TAG_HINT = 'phone ringing, phone vibrating, alarm beeping, notification, heartbeat, door creaking, door slam, door opening, door closing, knock, footsteps, running, glass shattering, glasses clink, gunshot, pistol shot, shotgun, bullet hit, explosion, thunder, bell, gong, unlock, keys, paper rustling, splash, switch click, dishes, pot, metal clang, box opening, pick up, drop, smash, impact, punch, thud, wood cracking, stones, wind, whoosh';
+const SFX_TAG_HINT = 'rain, heavy rain, light rain, phone ringing, phone vibrating, alarm beeping, notification, heartbeat, clap, door creaking, door slam, door opening, door closing, knock, footsteps, running, glass shattering, glasses clink, gunshot, pistol shot, shotgun, bullet hit, explosion, thunder, bell, gong, unlock, keys, paper rustling, splash, switch click, dishes, pot, metal clang, box opening, pick up, drop, smash, impact, punch, thud, wood cracking, stones, wind, whoosh';
 
 /**
  * A sound line's text is "[name]" plus optional extras after commas, written by the AI or by hand:
@@ -1655,12 +1660,16 @@ function parseSfx(text) {
     out.name = names.join(' ').trim();
     return out;
 }
+const SFX_BED_FILES = new Set(['rain', 'rain_heavy', 'rain_light']);
+function isBedFileKey(key) {
+    return isLocalSfxKey(key) && SFX_BED_FILES.has(String(key).slice(SFX_KEY_PREFIX.length));
+}
 function isSfxStop(line) {
     return line?.type === 'sfx' && parseSfx(line.text).stop;
 }
 /** Does this sound go on under the voices instead of playing once? (a 🔁 sound, or the tag says so) */
 function sfxIsBed(line, fx = parseSfx(line?.text)) {
-    return line?.type === 'sfx' && !fx.stop && (isLoopSfxKey(line.audioKey) || fx.seconds > 0 || fx.ongoing);
+    return line?.type === 'sfx' && !fx.stop && (isLoopSfxKey(line.audioKey) || isBedFileKey(line.audioKey) || fx.seconds > 0 || fx.ongoing);
 }
 
 function sfxWords(text) {
@@ -6309,7 +6318,7 @@ function settingsHtml() {
                 <label class="vc_check vc_sw"><input id="voice_cast_sfx_adult" type="checkbox" /><span>🔞 성인 장면 효과음도 넣기</span></label>
                 <div class="vc_hint vc_sub">키스·젖은 소리·살 부딪히는 소리 같은 것도 효과음 줄로 넣어요. 소리 파일은 아래 '내 효과음'에 직접 넣고 영어 단어(kiss, wet, slap, slurp …)를 붙인 뒤 🔞 버튼을 켜주세요. 🔞 켠 소리는 이 옵션이 켜져 있을 때만 나와요. 한 메시지에 최대 8개까지 넣어요. 분류 AI나 ElevenLabs가 거절하면 안 나올 수 있어요.</div>
                 <label class="vc_check vc_sw"><input id="voice_cast_sfx_local" type="checkbox" /><span>내장 효과음 파일 먼저 쓰기</span></label>
-                <div class="vc_hint vc_sub">문, 발소리, 총소리, 천둥 등 52개 소리가 들어 있어요. 크레딧을 안 쓰고 어느 모델에서나 나와요.</div>
+                <div class="vc_hint vc_sub">문, 발소리, 총소리, 천둥 등 56개 소리가 들어 있어요. 크레딧을 안 쓰고 어느 모델에서나 나와요.</div>
                 <label class="vc_check vc_sw"><input id="voice_cast_sfx_generate" type="checkbox" /><span>없는 소리는 ElevenLabs로 만들기</span></label>
                 <div class="vc_hint vc_sub">끄면 파일이 있는 소리만 나와요. 엉뚱한 소리가 나거나 크레딧이 아까울 때 꺼두세요.</div>
                 <div class="vc_hint">내장 소리에 맞는 게 없으면 ElevenLabs [태그]로 만들어요. 이건 Eleven v3 / v4 / v4 Turbo처럼 [태그]를 아는 모델에서만 나와요. 효과음은 대사와 섞지 않고 대본에 🔔 효과음 줄로 따로 들어가서, 편집기에서 고치거나 지울 수 있어요. 켠 뒤 새로 분류하는 메시지부터 들어가요.</div>
