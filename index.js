@@ -1665,10 +1665,19 @@ function sfxWords(text) {
 function customSfxLibrary() {
     // 🔞 sounds only exist while 🔞 성인 효과음 is on: never offered to the AI, never matched otherwise
     const adultOn = !!getSettings().adultSfx;
-    return (getSettings().customSfx ?? []).filter(c => c?.id && (adultOn || !c.adult)).map(c => {
+    const entries = [];
+    const byWords = new Map();
+    for (const c of (getSettings().customSfx ?? []).filter(x => x?.id && (adultOn || !x.adult))) {
         const words = String(c.words || c.name || '').split(',').map(w => w.trim()).filter(Boolean);
-        return { files: [CUSTOM_SFX_PREFIX + c.id], words };
-    });
+        // two sounds with the very same words are takes of one sound: the tag picks between them (like the bundled variants)
+        const key = words.map(w => w.toLowerCase()).sort().join('|');
+        const same = key ? byWords.get(key) : null;
+        if (same) { same.files.push(CUSTOM_SFX_PREFIX + c.id); continue; }
+        const entry = { files: [CUSTOM_SFX_PREFIX + c.id], words };
+        if (key) byWords.set(key, entry);
+        entries.push(entry);
+    }
+    return entries;
 }
 
 /**
