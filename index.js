@@ -70,6 +70,13 @@ const defaultSettings = Object.freeze({
     player: true,           // bottom mini player (swipe up / tap the little handle)       
     sfxVoiceId: '',
     sfxLocal: true,
+    // other voice services (through SillyTavern's own server routes; keys stay in its secret store)
+    geminiOn: false,
+    geminiModel: 'gemini-3.8-flash-tts',
+    minimaxOn: false,
+    minimaxModel: 'speech-02-hd',
+    minimaxHost: 'https://api.minimax.io',
+    minimaxVoices: '',       // one voice per line: "name=voice_id" or just "voice_id"
     sfxGenerate: true,       // no sound file fits → let ElevenLabs make the sound from the [tag] (off: such sounds are skipped)
     adultSfx: false,         // 🔞 also tag intimate sounds in adult scenes (kissing, wet sounds, skin slapping …)
     sfxOverlay: false,       // play sound effects under the voices instead of as their own turn
@@ -549,7 +556,7 @@ function sfxContextRules(form) {
     const tag = t => form.replace('%', t);
     return [
         ...(getSettings().sfxGenerate === false ? ['- Use ONLY sound tags from the list above (extras after a comma are fine). If no listed sound fits, add no sound for it.'] : []),
-        `- Sound extras — ONLY when the narration says so, added after a comma: a count stated for THAT sound ("knocked three times" → ${tag('knock, x3')}, at most x4); "soft" for a distant, faint or muffled sound and "loud" for a violent one (${tag('thunder, soft')}); seconds for a sound that clearly keeps going for a while ("typed for a while" → ${tag('typing, 4s')}, 2 to 8); "ongoing" for a steady background sound that continues through the scene and past this message (rain, a crackling fire, a running engine → ${tag('rain, ongoing')}). No extras by default; never stretch a single impact into a long sound.`,
+        `- Sound extras — ONLY when the narration says so, added after a comma: a count stated for THAT sound ("knocked three times" → ${tag('knock, x3')}, at most x4); "soft" for a distant, faint or muffled sound and "loud" for a violent one (${tag('thunder, soft')}); seconds for a sound that clearly keeps going for a while ("typed for a while" → ${tag('typing, 4s')}, 2 to 8); "ongoing" for a steady background sound that continues through the scene and past this message (rain, a crackling fire, a running engine → ${tag('rain, ongoing')}); "fast" or "slow" for the pace of a repeating sound when the narration says it speeds up or slows down (${tag('bed creak, fast')}). No extras by default; never stretch a single impact into a long sound.`,
         `- When a sound that was going on clearly ENDS in the narration — the action stops, they pull apart, the scene or place changes, time skips, the rain lets up — add the sound ${tag('stop')} at that point (or ${tag('stop: rain')} to end only that one). This applies to "ongoing" sounds, also ones from the previous message${loops.length ? `, and to these sounds, which repeat until stopped: ${loops.join(', ')}` : ''}. It does not count toward the limit. If such a sound simply continues to the end of the message, add nothing.`,
         '- Never add a sound for something that does not actually happen: negations ("did not slam the door"), wishes, plans, possibilities, comparisons, metaphors, memories, or sounds that are only mentioned in dialogue.',
     ];
@@ -1529,8 +1536,11 @@ function pickVoice(line) {
     const s = getSettings();
     if (isSfxStop(line)) return '';
     if (line.type === 'sfx' && s.sfxGenerate === false) return '';
+    if (line.type === 'sfx') {
+        // a sound made from its [tag] is an ElevenLabs thing: never send one to another service
+        return [line.voiceId, s.sfxVoiceId, s.unknownVoiceId, s.maleVoiceId, s.femaleVoiceId].find(v => v && providerOf(v) === 'elevenlabs') || '';
+    }
     if (line.voiceId) return line.voiceId; // manual override from the script editor
-    if (line.type === 'sfx') return s.sfxVoiceId || s.unknownVoiceId || s.maleVoiceId || s.femaleVoiceId || '';
     const entry = findCastEntry(line.speaker);
     if (entry?.voiceId) return entry.voiceId;
     // no voice assigned yet: use the gender from the line, or the one set in the cast row
@@ -1605,14 +1615,17 @@ const SFX_TAG_HINT = 'door creaking, door slam, door opening, door closing, knoc
  *   [thunder, soft]    distant / faint · [door slam, loud]
  *   [typing, 4s]       keeps going for a few seconds under the voices (1–8s)
  *   [rain, ongoing]    background sound: goes on under the voices and into the next message
+ *   [bed creak, fast]  pace: fast / slow (said again for a sound that is already repeating, it changes its pace)
  *   [stop]             every repeating / background sound fades out here · [stop: rain] just that one
  * Anything it does not know stays part of the name, so plain old tags work as before.
  */
 const SFX_SOFT_WORDS = new Set(['soft', 'softly', 'quiet', 'quietly', 'faint', 'faintly', 'distant', 'far', 'muffled', 'gentle']);
 const SFX_LOUD_WORDS = new Set(['loud', 'loudly', 'hard', 'heavy', 'violent', 'close']);
 const SFX_ONGOING_WORDS = new Set(['ongoing', 'continues', 'continuing', 'background', 'ambient']);
+const SFX_FAST_WORDS = new Set(['fast', 'faster', 'quick', 'quicker', 'rapid', 'frantic']);
+const SFX_SLOW_WORDS = new Set(['slow', 'slower', 'slowly', 'lazy', 'unhurried']);
 function parseSfx(text) {
-    const out = { name: '', count: 1, gain: 1, seconds: 0, ongoing: false, stop: false };
+    const out = { name: '', count: 1, gain: 1, rate: 1, seconds: 0, ongoing: false, stop: false };
     const parts = String(text ?? '').replace(/[[\]]/g, ' ').split(/[,;]/).map(x => x.trim()).filter(Boolean);
     if (!parts.length) return out;
     const stop = /^(?:stop|stops|end|silence)\b[:\s-]*(.*)$/i.exec(parts[0]);
@@ -1626,6 +1639,8 @@ function parseSfx(text) {
         else if (SFX_SOFT_WORDS.has(q)) out.gain = 0.55;
         else if (SFX_LOUD_WORDS.has(q)) out.gain = 1.3;
         else if (SFX_ONGOING_WORDS.has(q)) out.ongoing = true;
+        else if (SFX_FAST_WORDS.has(q)) out.rate = 1.25;
+        else if (SFX_SLOW_WORDS.has(q)) out.rate = 0.8;
         else names.push(part);
     }
     // "knock x3" without the comma
@@ -1728,12 +1743,31 @@ function keyHasAudio(key) {
     return !!key && (isLocalSfxKey(key) || !!storeIndex?.[key]);
 }
 
-function buildTtsText(line) {
+/** Delivery tags for a spoken line, in order: thought tag, the character's "always" tags, the line's own tag. */
+function deliveryTags(line) {
     const s = getSettings();
+    const tags = [];
+    if (line.type === 'thought' && s.thoughtTag?.trim()) tags.push(s.thoughtTag.trim());
+    const always = String(findCastEntry(line.speaker)?.alwaysTags ?? '').split(',').map(t => t.trim().replace(/^\[|\]$/g, '')).filter(Boolean);
+    for (const t of always) if (!tags.includes(t)) tags.push(t);
+    const shaped = shapeTag(line.tag, line);
+    if (shaped && !tags.includes(shaped)) tags.push(shaped);
+    return tags;
+}
+
+function buildTtsText(line, voiceId = '') {
+    const s = getSettings();
+    const provider = providerOf(voiceId);
+    if (line.type !== 'sfx' && provider === 'gemini') {
+        // Gemini takes the direction in plain words in front of the line
+        const tags = s.useTags ? deliveryTags(line) : [];
+        return tags.length ? `Say this in ${/^[aeiou]/i.test(tags[0]) ? 'an' : 'a'} ${tags.join(', ')} voice: ${line.text}` : line.text;
+    }
+    if (line.type !== 'sfx' && provider === 'minimax') return line.text; // no acting directions through this route
     if (line.type === 'sfx') {
         // a line with only [tags] counts as empty for ElevenLabs → add a quiet "..." so the tag has something to attach to
         const fx = parseSfx(line.text);
-        const plain = fx.count === 1 && fx.gain === 1 && !fx.seconds && !fx.ongoing;
+        const plain = fx.count === 1 && fx.gain === 1 && fx.rate === 1 && !fx.seconds && !fx.ongoing;
         const t = plain ? String(line.text ?? '').trim() : `[${fx.name}]`;
         const tag = t.startsWith('[') ? t.match(/^(\[[^\]]*\]\s*)+/)?.[0]?.trim() ?? t : `[${t}]`;
         const rest = t.startsWith('[') ? t.slice(tag.length).trim() : '';
@@ -2231,7 +2265,10 @@ async function synthesizeInner(text, voiceId, { fresh = false, stability: stabOv
         stability = [0, 0.5, 1].reduce((a, b) => (Math.abs(b - stability) < Math.abs(a - stability) ? b : a));
     }
 
-    const baseKey = audioCacheKey(text, voiceId, s.model, stability, similarity);
+    const provider = providerOf(voiceId);
+    const baseKey = provider === 'gemini' ? audioCacheKey(text, voiceId, String(s.geminiModel).trim(), 0, 0)
+        : provider === 'minimax' ? audioCacheKey(text, voiceId, String(s.minimaxModel).trim(), 0, 0)
+        : audioCacheKey(text, voiceId, s.model, stability, similarity);
     const cacheKey = fresh ? `${baseKey}_t${Date.now().toString(36)}` : baseKey;
     if (!fresh) {
         const cached = await getCachedAudio(cacheKey);
@@ -2244,6 +2281,11 @@ async function synthesizeInner(text, voiceId, { fresh = false, stability: stabOv
     activeGenerationRequests++;
     updateGenerationUI();
     try {
+        if (provider !== 'elevenlabs') {
+            const blob = await synthesizeOther(provider, text, voiceId);
+            await putCachedAudio(cacheKey, blob);
+            return { url: rememberUrl(cacheKey, blob), key: cacheKey };
+        }
         const response = await fetch('/api/speech/elevenlabs/synthesize', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -2271,7 +2313,95 @@ async function synthesizeInner(text, voiceId, { fresh = false, stability: stabOv
     }
 }
 
+// --- Voice services. ElevenLabs voice ids are stored bare (as they always were); the others carry a prefix,
+//     so one cast can mix services and a saved voice id says by itself where it has to be made.
+const GEMINI_PREFIX = 'gemini:';
+const MINIMAX_PREFIX = 'minimax:';
+function providerOf(voiceId) {
+    const id = String(voiceId ?? '');
+    return id.startsWith(GEMINI_PREFIX) ? 'gemini' : id.startsWith(MINIMAX_PREFIX) ? 'minimax' : 'elevenlabs';
+}
+const PROVIDER_LABEL = { elevenlabs: 'ElevenLabs', gemini: 'Gemini', minimax: 'MiniMax' };
+let lastElevenError = null; // why the ElevenLabs list failed the last time (the other services may still have loaded)
+
+/** Gemini / MiniMax through SillyTavern's server (it adds the saved key). Returns the audio blob. */
+async function synthesizeOther(provider, text, voiceId) {
+    const s = getSettings();
+    const { getRequestHeaders } = SillyTavern.getContext();
+    const gemini = provider === 'gemini';
+    const response = await fetch(gemini ? '/api/google/generate-native-tts' : '/api/minimax/generate-voice', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(gemini
+            ? { text, voice: voiceId.slice(GEMINI_PREFIX.length), model: String(s.geminiModel).trim(), api: 'makersuite' }
+            : { text, voiceId: voiceId.slice(MINIMAX_PREFIX.length), model: String(s.minimaxModel).trim(), apiHost: String(s.minimaxHost).trim() || 'https://api.minimax.io', format: 'mp3' }),
+    });
+    if (!response.ok) {
+        let detail = '';
+        try { detail = String((await response.json())?.error ?? '').slice(0, 200); } catch { /* not JSON */ }
+        const name = PROVIDER_LABEL[provider];
+        const hint = response.status === 404 ? ' 이 실리태번 버전에는 이 기능이 없어요. 실리태번을 업데이트해 주세요.'
+            : gemini ? ' 🔑 시작하기에서 Google AI Studio 키와 모델 이름을 확인해 주세요.'
+            : ' 🔑 시작하기에서 MiniMax 키 · 서버 · 모델 · 목소리 ID를 확인해 주세요.';
+        throw new Error(`${name} 요청 실패 (HTTP ${response.status}).${detail ? ` ${detail}` : ''}${hint}`);
+    }
+    const blob = await response.blob();
+    if (!blob.size) throw new Error(`${PROVIDER_LABEL[provider]}가 빈 음성을 돌려줬어요.`);
+    return blob;
+}
+
+async function fetchGeminiVoices() {
+    const { getRequestHeaders } = SillyTavern.getContext();
+    const response = await fetch('/api/google/list-native-voices', { method: 'POST', headers: getRequestHeaders(), body: '{}' });
+    if (!response.ok) {
+        const err = new Error(`HTTP ${response.status}`);
+        err.status = response.status;
+        throw err;
+    }
+    const json = await response.json();
+    return (json.voices ?? []).filter(v => v?.voice_id).map(v => ({
+        id: GEMINI_PREFIX + v.voice_id,
+        name: String(v.name ?? v.voice_id),
+        gender: '',
+        category: ['Gemini', v.description].filter(Boolean).join(' · '),
+        preview: '',
+    }));
+}
+
+/** MiniMax has no voice list here: the user writes the voice ids they use ("name=id" per line). */
+function minimaxVoices() {
+    return String(getSettings().minimaxVoices ?? '').split('\n').map(l => l.trim()).filter(Boolean).map((l) => {
+        const i = l.indexOf('=');
+        const id = (i >= 0 ? l.slice(i + 1) : l).trim();
+        const name = (i >= 0 ? l.slice(0, i) : l).trim() || id;
+        return id ? { id: MINIMAX_PREFIX + id, name, gender: '', category: 'MiniMax', preview: '' } : null;
+    }).filter(Boolean);
+}
+
+/** Every voice the user can pick. ElevenLabs failing is only an error when nothing else is set up. */
 async function fetchVoices() {
+    const s = getSettings();
+    const out = [];
+    lastElevenError = null;
+    try {
+        out.push(...await fetchElevenVoices());
+    } catch (e) {
+        lastElevenError = e;
+    }
+    if (s.geminiOn) {
+        try {
+            out.push(...await fetchGeminiVoices());
+        } catch (e) {
+            console.warn(LOG, 'Gemini voice list failed', e);
+            toastr.warning(`Gemini 목소리 목록을 못 불러왔어요 (${e?.status ? `HTTP ${e.status}` : '연결 오류'}). 실리태번을 최신 버전으로 업데이트해 주세요.`, 'MultiCast TTS', { timeOut: 8000 });
+        }
+    }
+    if (s.minimaxOn) out.push(...minimaxVoices());
+    if (lastElevenError && !out.length) throw lastElevenError;
+    return out;
+}
+
+async function fetchElevenVoices() {
     const { getRequestHeaders } = SillyTavern.getContext();
     const response = await fetch('/api/speech/elevenlabs/voices', {
         method: 'POST',
@@ -2882,10 +3012,17 @@ function togglePause() {
 
 // 효과음 겹쳐 재생: sounds that play under the voices (not waited for)
 const overlayAudios = new Set();
+/** "fast" / "slow" on a sound: quicker or slower, pitch moving with it like a real recording played at another speed. */
+function setSfxPace(audio, rate) {
+    const r = Number(rate);
+    if (!(r > 0) || r === 1) return;
+    try { audio.preservesPitch = false; audio.playbackRate = Math.min(1.6, Math.max(0.6, r)); } catch { /* ignore */ }
+}
 function playOverlay(url, line, fx = null) {
     const audio = new Audio(url);
     const master = Number(getSettings().volume);
     audio.volume = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.85 * (fx?.gain ?? 1)));
+    setSfxPace(audio, fx?.rate);
     overlayAudios.add(audio);
     const done = () => overlayAudios.delete(audio);
     // "x3": the same short sound again, a beat apart
@@ -2944,6 +3081,8 @@ function playBed(url, line, fx = null) {
     const same = activeBeds().find(a => a._vcKey === key);
     if (same) {
         if (fx?.ongoing) same._vcOngoing = true;
+        // "[bed creak, fast]" while it is already going: only the pace changes
+        if (fx && fx.rate !== 1) setSfxPace(same, fx.rate);
         return;
     }
     const master = Number(getSettings().volume);
@@ -2951,6 +3090,7 @@ function playBed(url, line, fx = null) {
     audio._vcKey = key;
     audio._vcBase = Math.min(1, Math.max(0, (Number.isNaN(master) ? 1 : master) * castVolumeFor(line) * 0.3 * (fx?.gain ?? 1)));
     audio._vcName = fx?.name ?? '';
+    setSfxPace(audio, fx?.rate);
     audio._vcOngoing = !!fx?.ongoing;
     // "4s": this one ends by itself
     if (fx?.seconds > 0 && !fx.ongoing) audio._vcTimer = setTimeout(() => { if (bedAudios.has(audio) && !audio._vcStopping) stopBed(audio, 700); }, fx.seconds * 1000);
@@ -3064,7 +3204,7 @@ function skipLine(delta) {
     finishCurrentLine();
 }
 
-function playUrl(url, mySession, line = null, gainMul = 1) {
+function playUrl(url, mySession, line = null, gainMul = 1, sfxRate = 1) {
     return new Promise((resolve) => {
         if (mySession !== session) return resolve();
         finishCurrentLine = resolve;
@@ -3076,6 +3216,7 @@ function playUrl(url, mySession, line = null, gainMul = 1) {
         const rate = (Number(getSettings().rate) || 1) * (own > 0 ? own : 1);
         audio.playbackRate = Math.min(2, Math.max(0.5, rate));
         audio.preservesPitch = true;
+        setSfxPace(audio, sfxRate);
         if (vol > 1) boostAudio(audio, vol);
         currentAudio = audio;
         audio.onended = () => resolve();
@@ -3188,7 +3329,10 @@ function buildPlayableLines(script, { keepThoughts = false } = {}) {
         .filter(l => l.type !== 'sfx' || keepThoughts || sfxPlayable(l))
         .map(l => (isSfxStop(l)
             ? { src: l, voiceId: SFX_STOP_VOICE, ttsText: '' }
-            : { src: l, voiceId: pickVoice(l) || (localSfxFor(l) ? 'local-sfx' : ''), ttsText: buildTtsText(l) }))
+            : (() => {
+                const voiceId = pickVoice(l) || (localSfxFor(l) ? 'local-sfx' : '');
+                return { src: l, voiceId, ttsText: buildTtsText(l, voiceId) };
+            })()))
         .filter(l => l.voiceId || l.src.audioKey);
 }
 
@@ -3415,12 +3559,12 @@ async function playMessage(messageId, { force = false, script: givenScript = nul
             if (end) hlCursor = end;
             prevPlayed = lines[i].src;
             if (!fx) setBedBoost(1, 200); // a voice: the background steps back
-            await playUrl(url, mySession, lines[i].src, fx?.gain ?? 1);
+            await playUrl(url, mySession, lines[i].src, fx?.gain ?? 1, fx?.rate ?? 1);
             // "x3" on a sound that plays by itself (겹쳐 재생 off)
             for (let k = 1; fx && k < fx.count; k++) {
                 if (mySession !== session || generationAtStart !== generationEpoch || playCtl.jump !== null) break;
                 await sleep(110);
-                await playUrl(url, mySession, lines[i].src, fx.gain);
+                await playUrl(url, mySession, lines[i].src, fx.gain, fx.rate);
             }
             if (mySession !== session || generationAtStart !== generationEpoch) return;
             if (!fx) setBedBoost(BED_GAP_BOOST, 350); // …and comes up a little in the gap
@@ -3785,7 +3929,7 @@ async function playScriptLine(messageId, index, { singleOnly = false } = {}) {
         const $btn = $(`#chat .mes[mesid="${messageId}"] .${LINE_BTN}[data-line="${index}"]`);
         $btn.addClass('vc_line_loading fa-spinner fa-spin').removeClass('fa-circle-play');
         try {
-            const made = await synthesize(buildTtsText(line), voiceId, { ...voiceSettingsFor(line), localSfx });
+            const made = await synthesize(buildTtsText(line, voiceId), voiceId, { ...voiceSettingsFor(line), localSfx });
             line.audioKey = made.key;
             noteClipInfo(made.key, line);
             url = made.url;
@@ -4219,7 +4363,7 @@ async function mixMessageAudio(lines, urls, messageId) {
             const live = beds.filter(b => b.end === null);
             if (live.length >= BED_MAX) { live[0].end = t; live[0].fade = 0.8; }
             const timed = fx.seconds > 0 && !fx.ongoing;
-            beds.push({ buf, start: t, end: timed ? t + fx.seconds : null, fade: 0.7, base: castVolumeFor(src) * 0.3 * fx.gain, key, name: fx.name });
+            beds.push({ buf, start: t, end: timed ? t + fx.seconds : null, fade: 0.7, base: castVolumeFor(src) * 0.3 * fx.gain, key, name: fx.name, rate: fx.rate });
             continue;
         }
         if (fx && s.sfxOverlay) {
@@ -4267,6 +4411,7 @@ async function mixMessageAudio(lines, urls, messageId) {
         const node = ctx.createBufferSource();
         node.buffer = b.buf;
         node.loop = true;
+        if (b.rate > 0 && b.rate !== 1) node.playbackRate.value = b.rate;
         const g = ctx.createGain();
         g.gain.setValueAtTime(0, b.start);
         for (const p of points) {
@@ -4366,7 +4511,13 @@ async function downloadMessageAudio(messageId, scriptOverride = null, { kind = '
         const parts = [];
         for (const url of urls) {
             if (!url) continue;
-            parts.push(await (await fetch(url)).arrayBuffer());
+            const clip = await (await fetch(url)).blob();
+            if (clip.type && !/mpeg|mp3/i.test(clip.type)) {
+                // e.g. Gemini voices come as wav: frames of different kinds cannot simply be glued together
+                toastr.warning('mp3가 아닌 음성(예: Gemini 목소리)이 섞여 있어서 mp3로 이어 붙일 수 없어요. "들리는 그대로 wav"로 받아주세요.', 'MultiCast TTS', { timeOut: 9000 });
+                return;
+            }
+            parts.push(await clip.arrayBuffer());
         }
         if (!parts.length) {
             toastr.error('음성을 만들지 못했어요.', 'MultiCast TTS');
@@ -4622,7 +4773,7 @@ async function playVoicePreview(voiceId, btn) {
     if (!voiceList.length) await loadVoices(false).catch(() => {});
     const v = voiceList.find(x => x.id === voiceId);
     if (!v?.preview) {
-        toastr.info('이 목소리는 일레븐랩스에 샘플이 없어요.', 'MultiCast TTS', { timeOut: 2000 });
+        toastr.info(providerOf(voiceId) === 'elevenlabs' ? '이 목소리는 일레븐랩스에 샘플이 없어요.' : `${PROVIDER_LABEL[providerOf(voiceId)]} 목소리는 미리 듣기 샘플이 없어요. 대사를 한 줄 재생해서 들어보세요.`, 'MultiCast TTS', { timeOut: 2500 });
         return;
     }
     const audio = new Audio(v.preview);
@@ -5187,8 +5338,10 @@ function renderCastList() {
 async function loadVoices(showToast = false) {
     try {
         voiceList = await fetchVoices();
-        voiceList.sort((a, b) => a.name.localeCompare(b.name));
-        $('#voice_cast_key').addClass('success');
+        // ElevenLabs first (as before), then the other services, each by name
+        const rank = { elevenlabs: 0, gemini: 1, minimax: 2 };
+        voiceList.sort((a, b) => (rank[providerOf(a.id)] - rank[providerOf(b.id)]) || a.name.localeCompare(b.name));
+        $('#voice_cast_key').toggleClass('success', !lastElevenError);
         renderVoiceSelects();
         if (showToast) toastr.success(`목소리 ${voiceList.length}개를 불러왔어요.`, 'MultiCast TTS');
     } catch (e) {
@@ -5217,8 +5370,10 @@ async function checkConnection() {
     $out.attr('data-state', 'busy').text('확인 중…');
     try {
         await loadVoices(false);
-        const own = voiceList.filter(v => !['premade'].includes(v.category)).length;
-        $out.attr('data-state', 'ok').text(`✅ 연결됐어요 · 목소리 ${voiceList.length}개 (내 목소리 ${own}개) · 모델 ${modelInfo(getSettings().model).label}`);
+        if (lastElevenError) throw lastElevenError; // this button is about ElevenLabs
+        const eleven = voiceList.filter(v => providerOf(v.id) === 'elevenlabs');
+        const own = eleven.filter(v => !['premade'].includes(v.category)).length;
+        $out.attr('data-state', 'ok').text(`✅ 연결됐어요 · 목소리 ${eleven.length}개 (내 목소리 ${own}개) · 모델 ${modelInfo(getSettings().model).label}`);
         toastr.success('일레븐랩스 연결 OK!', 'MultiCast TTS', { timeOut: 2000 });
     } catch (e) {
         const st = e?.status;
@@ -5366,7 +5521,7 @@ function buildEditor(messageId, script) {
             <details class="vc_hint vc_editor_help">
                 <summary>고친 줄만 새로 만들고, 안 고친 줄은 저장된 음성을 다시 써요. ⓘ</summary>
                 화자·성별·목소리·태그·대사를 고칠 수 있어요.
-                <br>🔔 효과음 줄은 쉼표 뒤에 덧붙일 수 있어요: <code>[knock, x3]</code> 세 번 · <code>[thunder, soft]</code> 작게 (<code>loud</code> 크게) · <code>[typing, 4s]</code> 4초 동안 · <code>[rain, ongoing]</code> 다음 메시지까지 깔리는 배경음.
+                <br>🔔 효과음 줄은 쉼표 뒤에 덧붙일 수 있어요: <code>[knock, x3]</code> 세 번 · <code>[thunder, soft]</code> 작게 (<code>loud</code> 크게) · <code>[bed creak, fast]</code> 빠르게 (<code>slow</code> 느리게) · <code>[typing, 4s]</code> 4초 동안 · <code>[rain, ongoing]</code> 다음 메시지까지 깔리는 배경음.
                 <br>🔇 반복 끄기 줄에 닿으면 깔려 있던 반복 · 배경 소리가 꺼져요. <code>[stop: rain]</code>처럼 적으면 그 소리만 꺼요.
                 <br>📚 메시지를 고치거나 다시 분류하면 예전 대본이 ${SCRIPT_HISTORY_MAX}개까지 남아요. 다른 음성 언어로 만든 대본도 ◀ ▶로 넘겨서 듣거나 받을 수 있어요. 채팅 파일에 같이 저장돼서 파일이 조금 커지고, 오래된 음성은 저장 공간 정리 때 지워질 수 있어요 (⭐ 즐겨찾기는 안 지워져요).
             </details>
@@ -5939,6 +6094,34 @@ function settingsHtml() {
                     <input id="voice_cast_custom_model" type="text" class="vc_field" placeholder="예: eleven_v5" />
                     <div class="vc_hint">일레븐랩스 문서에 나온 model_id를 그대로 적으면 돼요. 새 모델은 태그 지원으로 간주해요 (아래 체크박스로 끌 수 있어요).</div>
                 </div>
+                <div class="vc_section_title">🧪 다른 음성 서비스 <span class="vc_beta">실험</span></div>
+                <div class="vc_hint">일레븐랩스 대신, 또는 같이 쓸 수 있어요. 켜고 목소리 목록을 불러오면 캐스트의 목소리 칸에 같이 나와요. 캐릭터마다 다른 서비스를 섞어도 돼요. 효과음을 만드는 건 일레븐랩스 목소리로만 돼요.</div>
+                <label class="vc_check vc_sw"><input id="voice_cast_gemini_on" type="checkbox" /><span>Google Gemini TTS 쓰기</span></label>
+                <div id="voice_cast_gemini_block" style="display:none">
+                    <div class="vc_row">
+                        <div class="vc_btn manage-api-keys" data-key="api_key_makersuite" title="실리태번 비밀 저장소의 Google AI Studio 키 (채팅용 키와 같이 써요)"><i class="fa-solid fa-key"></i><span>Google AI Studio 키 설정</span></div>
+                    </div>
+                    <label for="voice_cast_gemini_model">Gemini 모델 이름</label>
+                    <input id="voice_cast_gemini_model" type="text" class="vc_field" list="voice_cast_gemini_models" placeholder="gemini-3.8-flash-tts" spellcheck="false" autocapitalize="off" autocomplete="off" />
+                    <datalist id="voice_cast_gemini_models"><option value="gemini-3.8-flash-tts"></option><option value="gemini-3.8-flash-lite-tts"></option></datalist>
+                    <div class="vc_hint">Google 문서에 나온 모델 이름을 그대로 적어요. 새 모델이 나오면 이름만 바꾸면 돼요. 감정 태그는 "이렇게 말해" 식의 지시로 바꿔서 보내요. 음성은 wav로 와서 저장 용량을 더 써요.</div>
+                </div>
+                <label class="vc_check vc_sw"><input id="voice_cast_minimax_on" type="checkbox" /><span>MiniMax 쓰기</span></label>
+                <div id="voice_cast_minimax_block" style="display:none">
+                    <div class="vc_row">
+                        <div class="vc_btn manage-api-keys" data-key="api_key_minimax" title="실리태번 비밀 저장소의 MiniMax 키"><i class="fa-solid fa-key"></i><span>MiniMax 키 설정</span></div>
+                    </div>
+                    <label for="voice_cast_minimax_model">MiniMax 모델 이름</label>
+                    <input id="voice_cast_minimax_model" type="text" class="vc_field" placeholder="speech-02-hd" spellcheck="false" autocapitalize="off" autocomplete="off" />
+                    <label for="voice_cast_minimax_host">MiniMax 서버</label>
+                    <select id="voice_cast_minimax_host" class="vc_field">
+                        <option value="https://api.minimax.io">api.minimax.io (국제)</option>
+                        <option value="https://api.minimaxi.com">api.minimaxi.com (중국)</option>
+                    </select>
+                    <label for="voice_cast_minimax_voices">MiniMax 목소리 ID (한 줄에 하나)</label>
+                    <textarea id="voice_cast_minimax_voices" class="vc_field" rows="3" placeholder="서하=여기에_목소리_ID" spellcheck="false"></textarea>
+                    <div class="vc_hint">MiniMax는 목소리 목록을 불러올 수 없어서 쓸 목소리 ID를 직접 적어요. "이름=ID"로 적으면 이름으로 보여요. 이 경로로는 감정 태그가 전달되지 않아요.</div>
+                </div>
                 
                     </div>
                 </section>
@@ -6446,6 +6629,21 @@ function bindSettingsUI() {
     bindCustomSfxUI();
     $('#voice_cast_sfx_local').prop('checked', s.sfxLocal !== false).on('change', function () { s.sfxLocal = !!this.checked; save(); });
     bindCheck('#voice_cast_sfx_overlay', 'sfxOverlay');
+    // other voice services: switch, model, MiniMax voice ids — the voice pickers refresh when something changes
+    const reloadVoicesSoon = (() => { let t = 0; return () => { clearTimeout(t); t = setTimeout(() => loadVoices(false).catch(() => {}), 600); }; })();
+    for (const [id, key, block] of [['#voice_cast_gemini_on', 'geminiOn', '#voice_cast_gemini_block'], ['#voice_cast_minimax_on', 'minimaxOn', '#voice_cast_minimax_block']]) {
+        $(block).toggle(!!s[key]);
+        $(id).prop('checked', !!s[key]).on('change', function () {
+            s[key] = !!this.checked;
+            save();
+            $(block).toggle(s[key]);
+            reloadVoicesSoon();
+        });
+    }
+    $('#voice_cast_gemini_model').val(s.geminiModel ?? '').on('input', function () { s.geminiModel = String(this.value).trim() || defaultSettings.geminiModel; save(); });
+    $('#voice_cast_minimax_model').val(s.minimaxModel ?? '').on('input', function () { s.minimaxModel = String(this.value).trim() || defaultSettings.minimaxModel; save(); });
+    $('#voice_cast_minimax_host').val(s.minimaxHost ?? defaultSettings.minimaxHost).on('change', function () { s.minimaxHost = String(this.value); save(); });
+    $('#voice_cast_minimax_voices').val(s.minimaxVoices ?? '').on('input', function () { s.minimaxVoices = String(this.value); save(); reloadVoicesSoon(); });
     $('#voice_cast_sfx_generate').prop('checked', s.sfxGenerate !== false).on('change', function () { s.sfxGenerate = !!this.checked; save(); });
     bindCheck('#voice_cast_sfx_adult', 'adultSfx');
     $('#voice_cast_sfx_adult').on('change', () => setTimeout(updateInlinePrompt, 0));
